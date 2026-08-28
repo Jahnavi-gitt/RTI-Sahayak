@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #FBF9F3;
+  color: #20262B;
+  -webkit-font-smoothing: antialiased;
+}
+
+.lang-ta, .lang-hi {
+  font-family: "Noto Sans Tamil", "Noto Sans Devanagari", "Noto Sans", sans-serif;
+}
+
+:focus-visible {
+  outline: 3px solid #E8A33D;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.paper-grain {
+  background-image: radial-gradient(circle at 1px 1px, rgba(11,93,93,0.06) 1px, transparent 0);
+  background-size: 18px 18px;
+}
