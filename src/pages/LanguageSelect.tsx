@@ -8,11 +8,15 @@ export default function LanguageSelect() {
   const { lang, setLang } = useApp();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const dest = searchParams.get("dest") || "signup";
+  const dest = searchParams.get("dest");
 
   function selectLanguage(selected: Lang) {
     setLang(selected);
-    navigate({ pathname: `/${dest}`, search: searchParams.toString() });
+    if (dest) {
+      navigate({ pathname: `/${dest}`, search: searchParams.toString() });
+    } else {
+      navigate("/");
+    }
   }
 
   return (

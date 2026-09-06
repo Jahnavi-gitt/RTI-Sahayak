@@ -32,12 +32,35 @@ export type RequestStatus =
   | "RECEIVED"
   | "UNDER_REVIEW"
   | "TRANSFERRED"
-  | "RESPONSE_RECEIVED";
+  | "RESPONSE_RECEIVED"
+  | "APPEAL_FILED"
+  | "APPEAL_UNDER_REVIEW"
+  | "APPEAL_DISPOSED";
 
 export interface StatusEvent {
   status: RequestStatus;
   date: string;
   label: string;
+}
+
+export type AppealGround =
+  | "no_response"
+  | "incomplete"
+  | "rejected"
+  | "unreasonable_fee";
+
+export interface FirstAppealData {
+  appealId: string;
+  originalRequestId: string;
+  ground: AppealGround;
+  groundLabel: string;
+  facts: string;
+  prayer: string;
+  filedDate: string;
+  faaName: string;
+  faaDesignation: string;
+  feePaid: number;
+  status: "APPEAL_FILED" | "APPEAL_UNDER_REVIEW" | "APPEAL_DISPOSED";
 }
 
 export interface RtiRequest {
@@ -49,6 +72,7 @@ export interface RtiRequest {
   createdAt: string;
   statusHistory: StatusEvent[];
   currentStatus: RequestStatus;
+  firstAppeal?: FirstAppealData;
 }
 
 export interface MockResponse {
@@ -56,3 +80,13 @@ export interface MockResponse {
   whatItMeans: string;
   whatToCheck: string[];
 }
+
+export type IdVerificationMethod = "digilocker" | "aadhaar_otp" | "pan_otp" | "camera_doc";
+
+export interface Draft {
+  rawProblem: string;
+  understanding: UnderstandResult | null;
+  questions: RtiQuestion[];
+  authority: Authority | null;
+}
+

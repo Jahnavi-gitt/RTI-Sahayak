@@ -21,7 +21,6 @@ export default function Understanding() {
       return;
     }
     let active = true;
-    setLoading(true);
     understandProblem(draft.rawProblem, lang).then((r) => {
       if (!active) return;
       setResult(r);
@@ -30,8 +29,7 @@ export default function Understanding() {
     return () => {
       active = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft.rawProblem]);
+  }, [draft.rawProblem, lang, navigate]);
 
   function confirm() {
     if (!result) return;
@@ -51,18 +49,28 @@ export default function Understanding() {
           </>
         ) : (
           <>
-            {result.source === "fallback" && (
-              <p className="text-xs bg-marigold-100 text-marigold-600 rounded-full px-3 py-1.5 font-semibold">
-                {t(lang, "aiUnavailable")}
-              </p>
-            )}
             <Sparkles className="text-marigold-500" size={30} aria-hidden="true" />
             <h1 className="font-display text-2xl font-semibold text-teal-900">
               {t(lang, "understandingTitle")}
             </h1>
-            <div className="bg-white border-2 border-teal-100 rounded-card p-5 w-full text-left shadow-card">
+            <div className="bg-teal-50/70 border border-teal-200 rounded-card p-4 w-full text-left shadow-xs space-y-2">
+              <span className="text-xs font-bold text-teal-800 uppercase tracking-wider block">
+                {t(lang, "yourComplaint")}
+              </span>
+              <p className="text-sm font-medium text-teal-950 leading-relaxed italic">
+                "{draft.rawProblem}"
+              </p>
+              <div className="pt-1">
+                <ListenButton text={draft.rawProblem} label={t(lang, "listenMyText")} />
+              </div>
+            </div>
+
+            <div className="bg-white border-2 border-teal-100 rounded-card p-5 w-full text-left shadow-card space-y-3">
+              <span className="text-xs font-bold text-teal-700 uppercase tracking-wider block">
+                {t(lang, "understandingTitle")}
+              </span>
               <p className="text-lg text-ink leading-relaxed">{result.summary}</p>
-              <div className="mt-3">
+              <div>
                 <ListenButton text={result.summary} />
               </div>
             </div>

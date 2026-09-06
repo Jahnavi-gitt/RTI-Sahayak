@@ -4,12 +4,11 @@ import { User, LogOut, Check } from "lucide-react";
 import Shell from "../components/Shell";
 import Button from "../components/Button";
 import { useApp } from "../context/AppContext";
-import { LANG_LABELS, t } from "../i18n/strings";
-import type { Lang } from "../types";
+import { t } from "../i18n/strings";
 import { obscurePhoneNumber, hashPin } from "../utils/security";
 
 export default function Profile() {
-  const { lang, setLang, currentUser, resetAuth, setUserPinHash } = useApp();
+  const { lang, currentUser, resetAuth, setUserPinHash } = useApp();
   const navigate = useNavigate();
 
   const [pinMode, setPinMode] = useState(false);
@@ -73,22 +72,6 @@ export default function Profile() {
             <span className="font-semibold text-ink">{obscurePhoneNumber(currentUser.phone)}</span>
           </div>
 
-          {/* Language selector */}
-          <div className="flex flex-col gap-1.5 border-b border-teal-50 pb-3">
-            <span className="text-sm text-ink/50">{t(lang, "profileLanguage")}</span>
-            <select
-              value={lang}
-              onChange={(e) => setLang(e.target.value as Lang)}
-              className="w-full min-h-[48px] rounded-lg border border-teal-200 bg-white px-3 text-sm font-semibold text-teal-700 focus-visible:outline-teal-500 mt-1"
-            >
-              {(Object.keys(LANG_LABELS) as Lang[]).map((l) => (
-                <option key={l} value={l}>
-                  {LANG_LABELS[l]}
-                </option>
-              ))}
-            </select>
-          </div>
-
           {/* Security PIN edit */}
           <div className="flex flex-col gap-2 pt-1">
             <span className="text-sm text-ink/50 font-bold uppercase tracking-wide">
@@ -112,7 +95,7 @@ export default function Profile() {
               <form onSubmit={handlePinChange} className="space-y-3.5 mt-2">
                 <div className="flex flex-col gap-1">
                   <label className="text-xs font-bold text-teal-600 uppercase tracking-wide">
-                    {t(lang, "createPin")}
+                    {t(lang, "enterPin")}
                   </label>
                   <input
                     type="password"

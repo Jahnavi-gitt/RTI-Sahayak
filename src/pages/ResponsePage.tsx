@@ -25,7 +25,7 @@ export default function ResponsePage() {
       setExplained(r);
       setLoading(false);
     });
-  }, []);
+  }, [lang]);
 
   if (!request) {
     navigate("/");

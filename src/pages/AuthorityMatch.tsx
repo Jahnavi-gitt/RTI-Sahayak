@@ -16,16 +16,27 @@ export default function AuthorityMatch() {
   const [selected, setSelected] = useState<Authority | null>(null);
   const [notFound, setNotFound] = useState(false);
 
-  useEffect(() => {
-    if (query.trim()) runSearch(query);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const runSearch = (q: string) => {
+    if (!q.trim()) return;
+    findAuthorities(q, lang).then((r) => {
+      setResults(r);
+      setNotFound(r.length === 0);
+    });
+  };
 
-  async function runSearch(q: string) {
-    const r = await findAuthorities(q);
-    setResults(r);
-    setNotFound(r.length === 0);
-  }
+  useEffect(() => {
+    let active = true;
+    if (query.trim()) {
+      findAuthorities(query, lang).then((r) => {
+        if (!active) return;
+        setResults(r);
+        setNotFound(r.length === 0);
+      });
+    }
+    return () => {
+      active = false;
+    };
+  }, [lang, query]);
 
   function confirm() {
     if (!selected) return;

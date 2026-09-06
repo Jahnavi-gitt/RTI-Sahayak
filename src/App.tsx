@@ -1,5 +1,7 @@
-import { HashRouter, Route, Routes } from "react-router-dom";
+import { useEffect } from "react";
+import { HashRouter, Route, Routes, useLocation } from "react-router-dom";
 import { AppProvider } from "./context/AppContext";
+import { stopAllSpeech } from "./services/tts";
 import Landing from "./pages/Landing";
 import Verify from "./pages/Verify";
 import LanguageSelect from "./pages/LanguageSelect";
@@ -23,15 +25,28 @@ import Kiosk from "./pages/kiosk/Kiosk";
 // Authentication pages
 import SignUp from "./pages/SignUp";
 import SignIn from "./pages/SignIn";
+import ForgotPin from "./pages/ForgotPin";
 import VerifyOtp from "./pages/VerifyOtp";
 import CreatePin from "./pages/CreatePin";
 import Dashboard from "./pages/Dashboard";
 import Profile from "./pages/Profile";
 
+function RouteSpeechController() {
+  const location = useLocation();
+
+  useEffect(() => {
+    // Whenever location (pathname, search, hash) changes, immediately cancel any previous speech
+    stopAllSpeech();
+  }, [location.pathname, location.search, location.hash]);
+
+  return null;
+}
+
 export default function App() {
   return (
     <AppProvider>
       <HashRouter>
+        <RouteSpeechController />
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/verify" element={<Verify />} />
@@ -56,6 +71,7 @@ export default function App() {
           {/* Auth pages */}
           <Route path="/signup" element={<SignUp />} />
           <Route path="/signin" element={<SignIn />} />
+          <Route path="/forgot-pin" element={<ForgotPin />} />
           <Route path="/verify-otp" element={<VerifyOtp />} />
           <Route path="/create-pin" element={<CreatePin />} />
           <Route path="/dashboard" element={<Dashboard />} />
@@ -65,3 +81,4 @@ export default function App() {
     </AppProvider>
   );
 }
+

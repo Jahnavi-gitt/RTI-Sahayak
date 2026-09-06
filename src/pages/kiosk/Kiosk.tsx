@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Home,
-  Keyboard,
   Mic,
   Printer,
   Volume2,
@@ -10,20 +9,24 @@ import {
   ShieldCheck,
   CheckCircle,
   FileText,
-  Search,
-  Upload,
   AlertCircle,
   Clock,
   Info,
   Shield,
-  Loader2
+  Loader2,
+  Camera,
+  Check
 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
-import { LANG_LABELS, t } from "../../i18n/strings";
+import { LANG_LABELS, LOCALE_MAP, t } from "../../i18n/strings";
 import type { Lang, RtiQuestion, Authority, UnderstandResult } from "../../types";
 import VoiceCapture from "../../components/VoiceCapture";
 import { understandProblem, generateRtiQuestions, findAuthorities } from "../../services/ai";
 import { generateRequestId, buildStatusHistory } from "../../mock/engine";
+import { getLocalizedDepartmentName } from "../../data/departments";
+import { downloadReceiptPdf } from "../../utils/pdfGenerator";
+import { formatAadhaar, formatPan, maskAadhaar, maskPan } from "../../utils/security";
+import { speakText, stopAllSpeech, cancelSpeech } from "../../services/tts";
 
 type KioskStep =
   | "welcome"
@@ -32,6 +35,7 @@ type KioskStep =
   | "verify_choose"
   | "verify_connect"
   | "verify_input"
+  | "verify_camera"
   | "verify_processing"
   | "verify_status"
   | "input_method"
@@ -42,7 +46,6 @@ type KioskStep =
   | "questions"
   | "documents_choice"
   | "digilocker_connect"
-  | "digilocker_auth"
   | "digilocker_docs"
   | "upload_pdf"
   | "documents_attached"
@@ -56,18 +59,9 @@ type KioskStep =
   | "tracking"
   | "explain_status";
 
-const TIMEOUT_WARNING_MS = 75_000; // 75 seconds warning
-const TIMEOUT_RESET_MS = 90_000;    // 90 seconds total timeout
-const LOCALE_MAP: Record<string, string> = {
-  en: "en-IN",
-  ta: "ta-IN",
-  hi: "hi-IN",
-  te: "te-IN",
-  kn: "kn-IN",
-  ml: "ml-IN",
-  bn: "bn-IN",
-  mr: "mr-IN"
-};
+// Extended, accessible session timeouts for elderly and first-time users
+const TIMEOUT_WARNING_MS = 180_000; // 3 minutes warning
+const TIMEOUT_RESET_MS = 240_000;   // 4 minutes total timeout
 
 export default function Kiosk() {
   const {
@@ -77,32 +71,32 @@ export default function Kiosk() {
     updateDraft,
     resetDraft,
     attachedDocs,
-    setAttachedDocs,
-    verified,
     setVerified,
     setVerificationMethod,
-    addRequest
+    setVerificationDetails,
+    addRequest,
+    currentUser
   } = useApp();
   
   const navigate = useNavigate();
   const [step, setStep] = useState<KioskStep>("welcome");
   const [history, setHistory] = useState<KioskStep[]>([]);
+  const [inputMode, setInputMode] = useState<"voice" | "type">("voice");
+  const [typeText, setTypeText] = useState("");
   const [heard, setHeard] = useState("");
   const [understanding, setUnderstanding] = useState<UnderstandResult | null>(null);
   const [questions, setQuestions] = useState<RtiQuestion[]>([]);
   const [authoritiesList, setAuthoritiesList] = useState<Authority[]>([]);
   const [selectedAuthority, setSelectedAuthority] = useState<Authority | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
   
-  // Verification Simulation details
-  const [fullName, setFullName] = useState(t(lang, "profileName"));
-  const [dob, setDob] = useState("28 / 08 / 1995");
-  const [citizenship, setCitizenship] = useState(t(lang, "citizenshipValue"));
-
-  useEffect(() => {
-    setFullName(t(lang, "profileName"));
-    setCitizenship(t(lang, "citizenshipValue"));
-  }, [lang]);
+  // Verification states
+  const [verifyType, setVerifyType] = useState<"aadhaar" | "pan">("aadhaar");
+  const [idNumber, setIdNumber] = useState("");
+  const [verifyOtpVal, setVerifyOtpVal] = useState("");
+  const [isOtpSent, setIsOtpSent] = useState(false);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const fullName = currentUser?.name || t(lang, "profileName");
+  const citizenship = t(lang, "citizenshipValue");
 
   // Payment states
   const [payMethod, setPayMethod] = useState<"upi" | "netbanking" | null>(null);
@@ -115,51 +109,23 @@ export default function Kiosk() {
   const timerWarningRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timerResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Document states
-  const [selectedDigiDocs, setSelectedDigiDocs] = useState<string[]>([]);
-  const [uploadedPDFName, setUploadedPDFName] = useState<string | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-
-  const speakText = useCallback((text: string) => {
-    if (!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    const targetLang = LOCALE_MAP[lang] ?? "en-IN";
-    u.lang = targetLang;
-    u.rate = 0.9;
-
-    const voices = window.speechSynthesis.getVoices();
-    const matchedVoice = voices.find((v) => {
-      const vLang = v.lang.toLowerCase().replace("_", "-");
-      const tLang = targetLang.toLowerCase();
-      return vLang === tLang || vLang.startsWith(tLang.split("-")[0]);
-    });
-    if (matchedVoice) {
-      u.voice = matchedVoice;
-    }
-
-    window.speechSynthesis.speak(u);
-  }, [lang]);
-
   const resetSession = useCallback(() => {
     resetDraft();
     setStep("welcome");
     setHistory([]);
+    setInputMode("voice");
+    setTypeText("");
     setHeard("");
     setUnderstanding(null);
     setQuestions([]);
     setAuthoritiesList([]);
     setSelectedAuthority(null);
-    setSearchQuery("");
     setPayMethod(null);
     setRequestId("");
     setIsReceiptPrinting(false);
     setReceiptPrinted(false);
-    setSelectedDigiDocs([]);
-    setUploadedPDFName(null);
-    setUploadError(null);
     setShowTimeoutWarning(false);
-    window.speechSynthesis.cancel();
+    cancelSpeech();
   }, [resetDraft]);
 
   const startInactivityTimers = useCallback(() => {
@@ -170,13 +136,13 @@ export default function Kiosk() {
 
     timerWarningRef.current = setTimeout(() => {
       setShowTimeoutWarning(true);
-      speakText("Your session will end soon. Do you need more time?");
+      speakText(t(lang, "kioskTimeoutTitle"), lang);
     }, TIMEOUT_WARNING_MS);
 
     timerResetRef.current = setTimeout(() => {
       resetSession();
     }, TIMEOUT_RESET_MS);
-  }, [step, resetSession, speakText]);
+  }, [step, resetSession, lang]);
 
   useEffect(() => {
     startInactivityTimers();
@@ -187,11 +153,13 @@ export default function Kiosk() {
     };
 
     window.addEventListener("click", handleActivity);
+    window.addEventListener("touchstart", handleActivity);
     window.addEventListener("keydown", handleActivity);
     return () => {
       if (timerWarningRef.current) clearTimeout(timerWarningRef.current);
       if (timerResetRef.current) clearTimeout(timerResetRef.current);
       window.removeEventListener("click", handleActivity);
+      window.removeEventListener("touchstart", handleActivity);
       window.removeEventListener("keydown", handleActivity);
     };
   }, [startInactivityTimers, showTimeoutWarning]);
@@ -201,10 +169,10 @@ export default function Kiosk() {
     startInactivityTimers();
   };
 
-  const transitionTo = (nextStep: KioskStep) => {
+  const transitionTo = useCallback((nextStep: KioskStep) => {
     setHistory((prev) => [...prev, step]);
     setStep(nextStep);
-  };
+  }, [step]);
 
   const handleBack = () => {
     if (history.length > 0) {
@@ -216,16 +184,93 @@ export default function Kiosk() {
     }
   };
 
-  const toggleDigiDoc = (doc: string) => {
-    setSelectedDigiDocs((prev) =>
-      prev.includes(doc) ? prev.filter((d) => d !== doc) : [...prev, doc]
-    );
+  const handleExitKiosk = () => {
+    if (currentUser) {
+      navigate("/dashboard");
+    } else {
+      navigate("/");
+    }
   };
+
+  // Get contextual, step-specific voice script
+  const getSpeakableText = useCallback((): string => {
+    switch (step) {
+      case "welcome":
+        return t(lang, "audio_welcome");
+      case "language":
+        return t(lang, "audio_language");
+      case "verify_intro":
+        return t(lang, "audio_verify_intro");
+      case "verify_choose":
+        return t(lang, "audio_verify_choose");
+      case "verify_connect":
+      case "digilocker_connect":
+        return t(lang, "audio_digilocker_selected");
+      case "verify_input":
+        return t(lang, "audio_verify_aadhaar_pan");
+      case "verify_camera":
+        return t(lang, "audio_verify_camera");
+      case "verify_status":
+        return t(lang, "audio_verify_status");
+      case "input_method":
+        return t(lang, "audio_input_method");
+      case "capture":
+        return t(lang, "audio_problem");
+      case "confirm_heard":
+        return `${t(lang, "audio_we_heard")} ${heard}`;
+      case "understanding":
+        return t(lang, "audio_understanding");
+      case "suitability":
+        return `${t(lang, "audio_suitability")} ${understanding?.suitability_reason || ""}`;
+      case "questions":
+        return `${t(lang, "audio_questions_editable")} ${questions.map((q, i) => `${i + 1}: ${q.text}`).join(". ")}`;
+      case "documents_choice":
+      case "digilocker_docs":
+      case "upload_pdf":
+        return t(lang, "audio_documents");
+      case "documents_attached":
+        return `${t(lang, "kioskAttachedDocsText")} ${attachedDocs.join(", ")}.`;
+      case "authority": {
+        const authName = selectedAuthority ? getLocalizedDepartmentName(selectedAuthority, lang) : "";
+        return `${t(lang, "audio_authority")} ${authName}`;
+      }
+      case "review": {
+        const authName = selectedAuthority ? getLocalizedDepartmentName(selectedAuthority, lang) : "";
+        return `${t(lang, "audio_review")} ${t(lang, "kioskReviewPublicAuth")} ${authName}. ${t(lang, "kioskReviewFee")}`;
+      }
+      case "payment_choose":
+        return t(lang, "audio_payment");
+      case "payment_delayed":
+        return t(lang, "audio_payment_success");
+      case "payment_failed":
+        return t(lang, "audio_payment_failure");
+      case "submitted":
+        return `${t(lang, "audio_submitted")} ${t(lang, "requestId")}: ${requestId}.`;
+      case "tracking":
+        return t(lang, "audio_tracking");
+      case "explain_status":
+        return t(lang, "audio_under_review");
+      default:
+        return t(lang, "audio_welcome");
+    }
+  }, [step, lang, heard, understanding, questions, attachedDocs, selectedAuthority, requestId]);
+
+  // Automatically speak guidance when entering new important kiosk stages
+  useEffect(() => {
+    const text = getSpeakableText();
+    if (text) {
+      speakText(text, lang);
+    }
+    return () => {
+      stopAllSpeech();
+    };
+  }, [getSpeakableText, lang]);
 
   async function processInputText(textVal: string) {
     if (!textVal.trim()) return;
+    setHeard(textVal.trim());
     transitionTo("understanding");
-    const u = await understandProblem(textVal.trim());
+    const u = await understandProblem(textVal.trim(), lang);
     setUnderstanding(u);
     updateDraft({ rawProblem: textVal.trim(), understanding: u });
     transitionTo("suitability");
@@ -234,27 +279,22 @@ export default function Kiosk() {
   async function generateQuestionsForKiosk() {
     if (!understanding) return;
     transitionTo("understanding");
-    const qs = await generateRtiQuestions(understanding, draft.rawProblem);
+    const qs = await generateRtiQuestions(understanding, draft.rawProblem, lang);
     setQuestions(qs);
     updateDraft({ questions: qs });
     transitionTo("questions");
   }
 
   async function searchKioskAuthorities(q: string) {
-    const list = await findAuthorities(q);
+    const list = await findAuthorities(q, lang);
     setAuthoritiesList(list);
   }
 
-  function handleVerifyChoose(method: "digilocker" | "gov_id") {
-    setVerificationMethod(method);
-    if (method === "digilocker") {
-      transitionTo("verify_connect");
-    } else {
-      transitionTo("verify_input");
-    }
-  }
-
   function handleVerifyIdentity() {
+    if (!isOtpSent) {
+      setIsOtpSent(true);
+      return;
+    }
     transitionTo("verify_processing");
   }
 
@@ -262,46 +302,31 @@ export default function Kiosk() {
     if (step === "verify_processing") {
       const timer = setTimeout(() => {
         setVerified(true);
+        const masked = verifyType === "aadhaar" ? maskAadhaar(idNumber || "987654321012") : maskPan(idNumber || "ABCDE1234F");
+        setVerificationDetails({
+          method: verifyType === "aadhaar" ? "Aadhaar Demo" : "PAN Demo",
+          maskedId: masked,
+          citizenName: fullName
+        });
         transitionTo("verify_status");
       }, 1500);
       return () => clearTimeout(timer);
     }
-  }, [step]);
+  }, [step, idNumber, verifyType, fullName, setVerified, setVerificationDetails, transitionTo]);
 
-  function handleDigiDocsSubmit() {
-    if (selectedDigiDocs.length === 0) return;
-    setAttachedDocs(selectedDigiDocs);
-    transitionTo("documents_attached");
-  }
-
-  function handlePDFUploadSimulation(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleCameraFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadError(null);
-    setUploadedPDFName(null);
-
-    if (file.type !== "application/pdf") {
-      setUploadError("We couldn't add that file. Please choose a PDF.");
-      return;
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setCapturedImage(url);
+      setVerificationMethod("camera_doc");
     }
-    if (file.size > 5 * 1024 * 1024) {
-      const sizeMb = file.size / (1024 * 1024);
-      setUploadError(`This PDF is ${sizeMb.toFixed(1)} MB. Please choose a file smaller than 5 MB.`);
-      return;
-    }
-
-    setUploadedPDFName(file.name);
-    setAttachedDocs([file.name]);
   }
 
   function handleKioskConfirmAuthority(auth: Authority) {
     setSelectedAuthority(auth);
     updateDraft({ authority: auth });
     transitionTo("review");
-  }
-
-  function handlePaymentInit(methodVal: "upi" | "netbanking") {
-    setPayMethod(methodVal);
   }
 
   function handleKioskPaymentOutcome(success: boolean) {
@@ -328,101 +353,100 @@ export default function Kiosk() {
     setRequestId(id);
     setPayMethod(null);
     
-    // Add dummy request to state
     const request = {
       id,
-      rawProblem: draft.rawProblem,
-      understanding: draft.understanding!,
-      questions: draft.questions,
-      authority: draft.authority!,
+      rawProblem: draft.rawProblem || heard || "RTI Application",
+      understanding: draft.understanding || {
+        topic: "general",
+        goal: "request_information" as const,
+        summary: "Official records request.",
+        rti_suitability: "likely" as const,
+        suitability_reason: "RTI is suitable for official government records.",
+        confidence: 0.95,
+        source: "fallback" as const
+      },
+      questions: draft.questions.length > 0 ? draft.questions : questions,
+      authority: selectedAuthority || draft.authority || authoritiesList[0],
       createdAt: new Date().toISOString(),
       statusHistory: buildStatusHistory(),
       currentStatus: "SUBMITTED" as const
     };
-    addRequest(request);
+    addRequest(request as any);
     transitionTo("submitted");
   }
 
   function printReceipt() {
     setIsReceiptPrinting(true);
+    const mockRequest: any = {
+      id: requestId || "RTI-2026-DEMO-001",
+      rawProblem: draft.rawProblem || heard || "Kiosk RTI application",
+      understanding: draft.understanding,
+      questions: draft.questions.length > 0 ? draft.questions : questions,
+      authority: selectedAuthority || draft.authority || authoritiesList[0],
+      createdAt: new Date().toISOString(),
+      statusHistory: buildStatusHistory(),
+      currentStatus: "SUBMITTED" as const
+    };
+    try {
+      downloadReceiptPdf(mockRequest, lang, fullName);
+    } catch {
+      // ignore download error if running in restricted test env
+    }
     setTimeout(() => {
       setIsReceiptPrinting(false);
       setReceiptPrinted(true);
-    }, 1500);
-  }
-
-  // Generate page text readout for TTS
-  function getSpeakableText() {
-    switch (step) {
-      case "welcome":
-        return `${t(lang, "appName")}. ${t(lang, "tagline")}`;
-      case "verify_intro":
-        return `${t(lang, "verifyIntroTitle")}. ${t(lang, "verifyIntroBody")}`;
-      case "verify_status":
-        return `${t(lang, "verifyStatusTitle")}. ${fullName}, ${citizenship}. ${t(lang, "verifyStatusSuccess3")}`;
-      case "input_method":
-        return `${t(lang, "kioskInputMethodTitle")}. ${t(lang, "kioskInputMethodSub")}`;
-      case "suitability":
-        return `${t(lang, "suitabilityTitle")}. ${understanding?.suitability_reason || ""}`;
-      case "questions":
-        return `${t(lang, "clearRequest")}. Here are the questions we will ask. ${questions.map((q) => q.text).join(". ")}`;
-      case "review":
-        return `${t(lang, "reviewTitle")}. Public Authority is ${selectedAuthority?.name || ""}. Fee is 10 Rupees.`;
-      case "explain_status":
-        return `Official status: Transferred under Section 6 3. What happened? Your request was transferred. What does it mean? Another authority may hold the information you requested.`;
-      default:
-        return "Please look at the screen to choose your next step.";
-    }
+    }, 1200);
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-teal-950 text-white font-body select-none">
-      {/* Permanent Header for Touch Assist Kiosk Navigation */}
+    <div className={`min-h-screen flex flex-col bg-teal-950 text-white font-body select-none lang-${lang}`}>
+      {/* Touch Assist Permanent Kiosk Header */}
       {step !== "welcome" && (
-        <header className="border-b border-white/10 bg-teal-950/80 backdrop-blur sticky top-0 z-20">
-          <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4 flex items-center justify-between gap-2 sm:gap-4">
-            <div className="flex items-center gap-2 sm:gap-3">
+        <header className="border-b border-white/10 bg-teal-950/90 backdrop-blur sticky top-0 z-20">
+          <div className="max-w-4xl mx-auto px-4 py-3.5 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
               <button
                 onClick={handleBack}
                 aria-label={t(lang, "back")}
-                className="min-h-[52px] sm:min-h-[56px] min-w-[52px] sm:min-w-[56px] bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20 active:scale-95"
+                className="min-h-[52px] min-w-[52px] bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20 active:scale-95"
               >
                 <ArrowLeft size={22} />
               </button>
               <button
                 onClick={resetSession}
-                className="min-h-[52px] sm:min-h-[56px] px-3 sm:px-5 bg-white/10 rounded-full flex items-center gap-2 hover:bg-white/20 active:scale-95"
+                className="min-h-[52px] px-4 bg-white/10 rounded-full flex items-center gap-2 hover:bg-white/20 active:scale-95"
               >
                 <Home size={18} />
-                <span className="font-semibold hidden sm:inline">{t(lang, "home")}</span>
+                <span className="font-bold text-sm hidden sm:inline">{t(lang, "home")}</span>
               </button>
             </div>
 
-            <div className="flex items-center gap-2 sm:gap-3">
+            <div className="flex items-center gap-3">
               <button
-                onClick={() => speakText(getSpeakableText())}
-                className="min-h-[52px] sm:min-h-[56px] px-3 sm:px-5 bg-white/10 rounded-full flex items-center gap-2 hover:bg-white/20 text-marigold-400 font-bold active:scale-95"
+                onClick={() => speakText(getSpeakableText(), lang)}
+                className="min-h-[52px] px-4 bg-marigold-500 text-teal-950 rounded-full flex items-center gap-2 font-bold hover:bg-marigold-400 active:scale-95 shadow-md"
               >
                 <Volume2 size={20} />
-                <span className="hidden sm:inline">{t(lang, "listen")}</span>
+                <span className="text-sm font-black">{t(lang, "listen")}</span>
               </button>
 
               <button
                 onClick={() => transitionTo("language")}
-                className="min-h-[52px] sm:min-h-[56px] px-3 sm:px-5 bg-white/10 rounded-full flex items-center gap-2 hover:bg-white/20 font-bold active:scale-95"
+                className="min-h-[52px] px-4 bg-white/10 rounded-full flex items-center gap-2 hover:bg-white/20 font-bold active:scale-95 border border-white/20"
               >
-                <span>{LANG_LABELS[lang].split(" — ")[0]}</span>
+                <span className="text-sm">{LANG_LABELS[lang].split(" — ")[0]}</span>
               </button>
             </div>
           </div>
         </header>
       )}
 
-      {/* Main Touch Content */}
-      <main className="flex-1 w-full max-w-4xl mx-auto px-6 py-10 flex flex-col items-center justify-center">
+      {/* Main Touch Kiosk Area */}
+      <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-8 py-8 flex flex-col items-center justify-center">
+        {/* Step: Welcome */}
         {step === "welcome" && (
-          <div className="flex flex-col items-center text-center gap-8 max-w-xl">
-            <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider bg-marigold-500 text-teal-900 px-4 py-1.5 rounded-full">
+          <div className="flex flex-col items-center text-center gap-7 max-w-xl">
+            <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider bg-marigold-500 text-teal-950 px-4 py-1.5 rounded-full">
               {t(lang, "independentNotice")}
             </span>
 
@@ -430,32 +454,32 @@ export default function Kiosk() {
               ?
             </div>
 
-            <h1 className="font-display text-5xl sm:text-6xl font-bold leading-tight">
+            <h1 className="font-display text-4xl sm:text-6xl font-bold leading-tight">
               {t(lang, "appName")}
             </h1>
 
-            <p className="text-xl sm:text-2xl text-teal-100 max-w-md">
+            <p className="text-xl sm:text-2xl text-teal-100 max-w-md leading-relaxed">
               “{t(lang, "tagline")}”
             </p>
 
-            <div className="w-full flex flex-col gap-4 mt-4">
+            <div className="w-full flex flex-col gap-3.5 mt-2">
               <button
                 onClick={() => transitionTo("verify_intro")}
-                className="min-h-[84px] w-full rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-950 text-2xl font-bold flex items-center justify-center gap-3 shadow-md active:scale-95"
+                className="min-h-[84px] w-full rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-950 text-2xl font-black flex items-center justify-center gap-3 shadow-md active:scale-95"
               >
                 {t(lang, "kioskStartJourney")}
               </button>
 
               <button
                 onClick={() => transitionTo("language")}
-                className="min-h-[72px] w-full rounded-2xl border-3 border-white/30 hover:border-white/50 text-white text-xl font-bold transition-all active:scale-95"
+                className="min-h-[68px] w-full rounded-2xl border-2 border-white/30 hover:border-white/60 text-white text-xl font-bold active:scale-95"
               >
                 {t(lang, "kioskChooseLang")}
               </button>
 
               <button
-                onClick={() => navigate("/")}
-                className="text-teal-300 underline font-semibold text-lg py-2"
+                onClick={handleExitKiosk}
+                className="text-teal-300 underline font-semibold text-lg py-2 hover:text-white"
               >
                 {t(lang, "kioskExit")}
               </button>
@@ -463,12 +487,13 @@ export default function Kiosk() {
           </div>
         )}
 
+        {/* Step: Language Select */}
         {step === "language" && (
           <div className="w-full max-w-2xl flex flex-col gap-6 text-center">
             <h1 className="font-display text-4xl font-bold">{t(lang, "shellSelectLanguage")}</h1>
             <p className="text-teal-100 text-lg">{t(lang, "kioskSelectLangSub")}</p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
               {(Object.keys(LANG_LABELS) as Lang[]).map((l) => (
                 <button
                   key={l}
@@ -480,10 +505,10 @@ export default function Kiosk() {
                       handleBack();
                     }
                   }}
-                  className={`min-h-[72px] rounded-2xl border-2 p-4 text-center font-semibold text-xl transition-all ${
+                  className={`min-h-[72px] rounded-2xl border-2 p-4 text-center font-bold text-xl transition-all ${
                     lang === l
-                      ? "bg-marigold-500 border-marigold-500 text-teal-900 shadow-md font-bold"
-                      : "bg-white/5 border-white/10 hover:bg-white/10 text-white"
+                      ? "bg-marigold-500 border-marigold-500 text-teal-950 shadow-md scale-102"
+                      : "bg-white/5 border-white/15 hover:bg-white/15 text-white"
                   }`}
                 >
                   {LANG_LABELS[l]}
@@ -493,249 +518,168 @@ export default function Kiosk() {
           </div>
         )}
 
+        {/* Step: Verify Intro */}
         {step === "verify_intro" && (
           <div className="flex flex-col gap-6 text-center items-center max-w-lg">
-            <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center text-marigold-400 shadow-md">
-              <ShieldCheck size={36} />
+            <div className="w-20 h-20 rounded-full bg-white/10 flex items-center justify-center text-marigold-400 shadow-md">
+              <ShieldCheck size={44} />
             </div>
             <h1 className="font-display text-4xl font-bold">{t(lang, "verifyIntroTitle")}</h1>
-            <p className="text-xl text-teal-100 leading-relaxed font-medium">
-              {t(lang, "verifyIntroBody")}
-            </p>
+            <p className="text-lg text-teal-100 leading-relaxed">{t(lang, "verifyIntroBody")}</p>
             <button
               onClick={() => transitionTo("verify_choose")}
-              className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-950 text-2xl font-bold mt-4 shadow-md active:scale-95"
+              className="min-h-[72px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-2xl font-bold shadow-md hover:bg-marigold-400 active:scale-95 mt-4"
             >
               {t(lang, "verifyIntroButton")}
             </button>
           </div>
         )}
 
+        {/* Step: Verify Choose Method */}
         {step === "verify_choose" && (
-          <div className="flex flex-col gap-6 w-full max-w-xl">
-            <h1 className="font-display text-4xl font-bold text-center">{t(lang, "verifyChooseTitle")}</h1>
-            <p className="text-teal-100 text-lg text-center font-medium">
-              {t(lang, "verifyChooseSub")}
-            </p>
+          <div className="flex flex-col gap-6 w-full max-w-xl text-center">
+            <h1 className="font-display text-3xl sm:text-4xl font-bold">{t(lang, "verifyChooseTitle")}</h1>
+            <p className="text-teal-100">{t(lang, "verifyChooseSub")}</p>
             <div className="flex flex-col gap-4 mt-2">
               <button
-                onClick={() => handleVerifyChoose("digilocker")}
-                className="w-full text-left bg-white/5 border-2 border-white/10 hover:border-white/30 rounded-2xl p-5 flex flex-col gap-2 transition-all min-h-[108px] active:scale-95"
+                onClick={() => {
+                  setVerificationMethod("aadhaar_otp");
+                  setVerifyType("aadhaar");
+                  transitionTo("verify_input");
+                }}
+                className="w-full text-left bg-white/10 border-2 border-white/20 hover:border-marigold-400 rounded-2xl p-5 flex items-center gap-4 transition-all"
               >
-                <span className="font-bold text-xl text-marigold-400">{t(lang, "verifyChooseDigiLocker")}</span>
-                <span className="text-sm text-teal-100/80">{t(lang, "verifyChooseDigiLockerSub")}</span>
+                <Shield className="text-marigold-400 shrink-0" size={32} />
+                <div>
+                  <span className="font-bold text-xl block">{t(lang, "verifyChooseGovId")}</span>
+                  <span className="text-sm text-teal-200">{t(lang, "verifyChooseGovIdSub")}</span>
+                </div>
               </button>
 
               <button
-                onClick={() => handleVerifyChoose("gov_id")}
-                className="w-full text-left bg-white/5 border-2 border-white/10 hover:border-white/30 rounded-2xl p-5 flex flex-col gap-2 transition-all min-h-[108px] active:scale-95"
+                onClick={() => {
+                  setVerificationMethod("camera_doc");
+                  transitionTo("verify_camera");
+                }}
+                className="w-full text-left bg-white/10 border-2 border-white/20 hover:border-marigold-400 rounded-2xl p-5 flex items-center gap-4 transition-all"
               >
-                <span className="font-bold text-xl text-marigold-400">{t(lang, "verifyChooseGovId")}</span>
-                <span className="text-sm text-teal-100/80">{t(lang, "verifyChooseGovIdSub")}</span>
+                <Camera className="text-marigold-400 shrink-0" size={32} />
+                <div>
+                  <span className="font-bold text-xl block">{t(lang, "verifyChooseCamera")}</span>
+                  <span className="text-sm text-teal-200">{t(lang, "verifyChooseCameraSub")}</span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  setVerificationMethod("digilocker");
+                  transitionTo("verify_connect");
+                }}
+                className="w-full text-left bg-white/10 border-2 border-white/20 hover:border-marigold-400 rounded-2xl p-5 flex items-center gap-4 transition-all"
+              >
+                <ShieldCheck className="text-marigold-400 shrink-0" size={32} />
+                <div>
+                  <span className="font-bold text-xl block">{t(lang, "verifyChooseDigiLocker")}</span>
+                  <span className="text-sm text-teal-200">{t(lang, "audio_digilocker_option")}</span>
+                </div>
               </button>
             </div>
           </div>
         )}
 
-        {step === "verify_connect" && (
-          <div className="flex flex-col gap-6 max-w-md mx-auto text-center items-center">
-            <div className="font-display font-bold text-marigold-400 text-3xl">DigiLocker</div>
-            <div className="bg-white/10 text-white px-3.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider">
-              {t(lang, "verifyConnectSub")}
-            </div>
-            <h2 className="font-display text-2xl font-bold text-white mt-2">
-              {t(lang, "verifyConnectTitle")}
-            </h2>
-            <p className="text-base text-teal-100 leading-relaxed">
-              {t(lang, "verifyConnectBody")}
-            </p>
-            <div className="w-full flex flex-col gap-3 mt-4">
-              <button
-                onClick={() => transitionTo("verify_input")}
-                className="w-full min-h-[72px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-xl font-bold active:scale-95"
-              >
-                {t(lang, "verifyConnectButton")}
-              </button>
-              <button
-                onClick={() => transitionTo("verify_choose")}
-                className="w-full min-h-[72px] rounded-2xl border-2 border-white/20 hover:bg-white/10 text-white text-lg font-bold"
-              >
-                {t(lang, "cancel")}
-              </button>
-            </div>
-          </div>
-        )}
-
+        {/* Step: Verify Aadhaar / PAN Input */}
         {step === "verify_input" && (
-          <div className="flex flex-col gap-5 w-full max-w-md">
-            <div className="text-center">
-              <div className="font-display font-bold text-marigold-400 text-2xl mb-1">
-                {t(lang, "verifyInputTitle")}
+          <div className="flex flex-col gap-6 w-full max-w-lg text-center">
+            <h1 className="font-display text-3xl font-bold">{t(lang, "verifyChooseGovId")}</h1>
+            <div className="bg-white/10 border-2 border-white/20 rounded-2xl p-6 text-left space-y-4">
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setVerifyType("aadhaar")}
+                  className={`flex-1 py-3 rounded-xl font-bold text-sm border-2 ${
+                    verifyType === "aadhaar" ? "bg-marigold-500 text-teal-950 border-marigold-500" : "border-white/20 text-white"
+                  }`}
+                >
+                  {t(lang, "aadhaarTab")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVerifyType("pan")}
+                  className={`flex-1 py-3 rounded-xl font-bold text-sm border-2 ${
+                    verifyType === "pan" ? "bg-marigold-500 text-teal-950 border-marigold-500" : "border-white/20 text-white"
+                  }`}
+                >
+                  {t(lang, "panTab")}
+                </button>
               </div>
-            </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-marigold-400 uppercase tracking-wide">
-                  {t(lang, "verifyInputName")}
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wider text-teal-200 block mb-1">
+                  {verifyType === "aadhaar" ? t(lang, "aadhaarLabel") : t(lang, "panLabel")}
                 </label>
                 <input
                   type="text"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className="w-full rounded-xl p-3 text-lg text-teal-950 font-bold bg-white focus:outline-none"
+                  placeholder={verifyType === "aadhaar" ? "9876 5432 1012" : "ABCDE1234F"}
+                  value={idNumber}
+                  onChange={(e) => setIdNumber(verifyType === "aadhaar" ? formatAadhaar(e.target.value) : formatPan(e.target.value))}
+                  className="w-full bg-white/10 border-2 border-white/20 rounded-xl p-3.5 text-2xl font-mono tracking-widest text-center text-white focus:outline-none focus:border-marigold-400"
                 />
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-marigold-400 uppercase tracking-wide">
-                  {t(lang, "verifyInputDob")}
-                </label>
-                <input
-                  type="text"
-                  value={dob}
-                  onChange={(e) => setDob(e.target.value)}
-                  className="w-full rounded-xl p-3 text-lg text-teal-950 font-bold bg-white focus:outline-none"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-bold text-marigold-400 uppercase tracking-wide">
-                  {t(lang, "verifyInputCitizenship")}
-                </label>
-                <input
-                  type="text"
-                  value={citizenship}
-                  onChange={(e) => setCitizenship(e.target.value)}
-                  className="w-full rounded-xl p-3 text-lg text-teal-950 font-bold bg-white focus:outline-none"
-                />
-              </div>
-
-              <p className="text-xs font-bold text-marigold-400 uppercase text-center pt-2">
-                {t(lang, "demoData")}
-              </p>
+              {isOtpSent && (
+                <div className="pt-2 border-t border-white/10 space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-wider text-teal-200 block">
+                    {t(lang, "enterOtpSent")}
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    placeholder="123456"
+                    value={verifyOtpVal}
+                    onChange={(e) => setVerifyOtpVal(e.target.value)}
+                    className="w-full bg-white/10 border-2 border-white/20 rounded-xl p-3 text-2xl font-mono tracking-widest text-center text-white"
+                  />
+                  <p className="text-xs text-marigold-400 text-center font-bold">{t(lang, "demoOtpLabel")}: 123456</p>
+                </div>
+              )}
             </div>
 
             <button
               onClick={handleVerifyIdentity}
-              className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-950 text-2xl font-bold shadow-md active:scale-95"
+              className="min-h-[68px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-xl font-bold shadow-md hover:bg-marigold-400"
             >
-              {t(lang, "verifyInputButton")}
+              {isOtpSent ? t(lang, "verify") : t(lang, "verifyIdButton")}
             </button>
           </div>
         )}
 
-        {step === "verify_processing" && (
-          <div className="flex flex-col items-center gap-4 py-12 text-center">
-            <Loader2 className="animate-spin text-marigold-400" size={48} />
-            <h2 className="text-2xl font-semibold text-white">
-              {t(lang, "verifyProcessing")}
-            </h2>
-          </div>
-        )}
+        {/* Step: Verify Camera Capture */}
+        {step === "verify_camera" && (
+          <div className="flex flex-col gap-6 w-full max-w-lg text-center items-center">
+            <h1 className="font-display text-3xl font-bold">{t(lang, "cameraCaptureTitle")}</h1>
+            <p className="text-teal-100">{t(lang, "cameraCaptureSub")}</p>
 
-        {step === "verify_status" && (
-          <div className="flex flex-col gap-6 items-center text-center w-full max-w-md">
-            <div className="w-16 h-16 rounded-full bg-leaf/20 flex items-center justify-center text-leaf border border-leaf/30 shadow-md">
-              <CheckCircle size={36} />
-            </div>
-            <h1 className="font-display text-4xl font-bold text-white">{t(lang, "verifyStatusTitle")}</h1>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 w-full text-left space-y-4 shadow-md">
-              <div className="flex justify-between items-center border-b border-white/10 pb-3">
-                <span className="text-teal-100/70 text-base">{t(lang, "verifyInputName")}</span>
-                <span className="font-bold text-lg text-white">{fullName}</span>
-              </div>
-              <div className="flex justify-between items-center border-b border-white/10 pb-3">
-                <span className="text-teal-100/70 text-base">{t(lang, "verifyInputCitizenship")}</span>
-                <span className="font-bold text-teal-900 bg-marigold-400 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider font-mono">
-                  {citizenship}
-                </span>
-              </div>
-              <div className="space-y-2.5 pt-2">
-                <p className="text-base text-leaf font-semibold flex items-center gap-2">
-                  ✓ {t(lang, "verifyStatusSuccess1")}
-                </p>
-                <p className="text-base text-leaf font-semibold flex items-center gap-2">
-                  ✓ {t(lang, "verifyStatusSuccess2")}
-                </p>
-                <p className="text-base text-leaf font-semibold flex items-center gap-2">
-                  ✓ {t(lang, "verifyStatusSuccess3")}
-                </p>
-              </div>
+            <div className="w-full bg-white/10 border-2 border-dashed border-white/30 rounded-2xl p-6 flex flex-col items-center justify-center min-h-[220px]">
+              {capturedImage ? (
+                <div className="flex flex-col items-center gap-3">
+                  <img src={capturedImage} alt="Captured ID" className="max-h-48 rounded-xl object-contain border border-white/30" />
+                  <span className="text-sm font-bold text-leaf flex items-center gap-1">
+                    <CheckCircle size={16} /> {t(lang, "kioskDocCaptured")}
+                  </span>
+                </div>
+              ) : (
+                <label className="cursor-pointer flex flex-col items-center gap-3 w-full py-6">
+                  <Camera size={48} className="text-marigold-400" />
+                  <span className="font-bold text-lg">{t(lang, "takePhoto")}</span>
+                  <input type="file" accept="image/*" capture="environment" onChange={handleCameraFile} className="hidden" />
+                </label>
+              )}
             </div>
 
-            <p className="text-sm text-teal-100/75 bg-teal-950/40 rounded-xl px-4 py-3 leading-relaxed border border-teal-800/30">
-              {t(lang, "verifyStatusDisclaimer")}
-            </p>
-
-            <button
-              onClick={() => transitionTo("input_method")}
-              className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold mt-2 shadow-md"
-            >
-              {t(lang, "continue")}
-            </button>
-          </div>
-        )}
-
-        {step === "input_method" && (
-          <div className="flex flex-col gap-6 w-full max-w-xl text-center">
-            <h1 className="font-display text-4xl font-bold">{t(lang, "kioskInputMethodTitle")}</h1>
-            <p className="text-teal-100 text-lg">{t(lang, "kioskInputMethodSub")}</p>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+            {capturedImage && (
               <button
-                onClick={() => transitionTo("capture")}
-                className="min-h-[140px] rounded-2xl bg-white/5 border-2 border-white/10 hover:border-white/30 flex flex-col items-center justify-center gap-3 active:scale-95"
-              >
-                <Mic size={36} className="text-marigold-400" />
-                <span className="text-xl font-bold">{t(lang, "kioskWelcomeSpeak")}</span>
-              </button>
-
-              <button
-                onClick={() => transitionTo("capture")}
-                className="min-h-[140px] rounded-2xl bg-white/5 border-2 border-white/10 hover:border-white/30 flex flex-col items-center justify-center gap-3 active:scale-95"
-              >
-                <Keyboard size={36} className="text-marigold-400" />
-                <span className="text-xl font-bold">{t(lang, "kioskWelcomeType")}</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === "capture" && (
-          <div className="w-full max-w-xl flex flex-col gap-6">
-            <h1 className="font-display text-3xl font-bold text-center">{t(lang, "screen2Title")}</h1>
-            
-            <VoiceCapture
-              label={t(lang, "kioskSpeakStart")}
-              listeningLabel={t(lang, "kioskSpeakListening")}
-              onResult={(spoken) => {
-                setHeard(spoken);
-                transitionTo("confirm_heard");
-              }}
-            />
-
-            <div className="flex flex-col gap-2">
-              <label htmlFor="kiosk-text" className="text-teal-100 font-semibold">{t(lang, "speak")}:</label>
-              <textarea
-                id="kiosk-text"
-                value={heard}
-                onChange={(e) => setHeard(e.target.value)}
-                placeholder={t(lang, "kioskTypePlaceholder")}
-                rows={4}
-                className="w-full rounded-2xl p-4 text-xl text-teal-950 font-medium focus-visible:outline-marigold-400 bg-white"
-              />
-            </div>
-
-            <p className="text-xs text-teal-100/60 bg-teal-950/45 rounded-xl px-4 py-3 leading-relaxed border border-teal-800/30">
-              {t(lang, "sensitiveWarning")}
-            </p>
-
-            {heard.trim().length >= 5 && (
-              <button
-                onClick={() => processInputText(heard)}
-                className="min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md active:scale-95"
+                onClick={() => transitionTo("verify_processing")}
+                className="min-h-[68px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-xl font-bold shadow-md"
               >
                 {t(lang, "continue")}
               </button>
@@ -743,26 +687,187 @@ export default function Kiosk() {
           </div>
         )}
 
-        {step === "confirm_heard" && (
-          <div className="w-full max-w-lg flex flex-col gap-6 text-center">
-            <p className="text-2xl text-teal-100">{t(lang, "kioskWeHeard")}</p>
-            <p className="font-display text-3xl font-bold italic text-marigold-400 bg-teal-950/50 p-6 rounded-2xl border border-teal-800">
-              “{heard}”
-            </p>
+        {/* Step: DigiLocker Connect Simulation */}
+        {step === "verify_connect" && (
+          <div className="flex flex-col gap-6 text-center items-center max-w-md">
+            <div className="font-display text-4xl font-black text-teal-300">DigiLocker</div>
+            <h2 className="font-display text-3xl font-bold">{t(lang, "verifyChooseDigiLocker")}</h2>
+            <p className="text-teal-100">{t(lang, "audio_digilocker_selected")}</p>
+            <button
+              onClick={() => transitionTo("verify_processing")}
+              className="min-h-[68px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-xl font-bold shadow-md mt-4"
+            >
+              {t(lang, "continue")}
+            </button>
+          </div>
+        )}
+
+        {/* Step: Processing Verification */}
+        {step === "verify_processing" && (
+          <div className="flex flex-col items-center gap-6 py-12 text-center">
+            <Loader2 className="animate-spin text-marigold-400" size={64} />
+            <h2 className="text-2xl font-bold">{t(lang, "verifyProcessing")}</h2>
+          </div>
+        )}
+
+        {/* Step: Verification Success Popup */}
+        {step === "verify_status" && (
+          <div className="flex flex-col gap-6 items-center text-center max-w-md">
+            <div className="w-20 h-20 rounded-full bg-leaf flex items-center justify-center text-white shadow-lg">
+              <Check size={44} />
+            </div>
+            <h1 className="font-display text-4xl font-bold text-white">{t(lang, "verifySuccessTitle")}</h1>
+            <div className="bg-white/10 border-2 border-white/20 rounded-2xl p-5 w-full text-left space-y-2.5">
+              <div className="flex justify-between text-sm">
+                <span className="text-teal-200">{t(lang, "applicantNameLabel")}:</span>
+                <span className="font-bold">{fullName}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-teal-200">{t(lang, "citizenship")}:</span>
+                <span className="font-bold text-marigold-400">{citizenship}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-teal-200">{t(lang, "statusLabel")}:</span>
+                <span className="font-bold text-leaf">{t(lang, "verifiedStatus")}</span>
+              </div>
+            </div>
+            <p className="text-xs text-teal-200">{t(lang, "verifyStatusDisclaimer")}</p>
+            <button
+              onClick={() => transitionTo("input_method")}
+              className="min-h-[72px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-2xl font-bold shadow-md hover:bg-marigold-400 mt-2"
+            >
+              {t(lang, "continue")} →
+            </button>
+          </div>
+        )}
+
+        {/* Step: Input Method Choice */}
+        {step === "input_method" && (
+          <div className="flex flex-col gap-6 w-full max-w-xl text-center">
+            <h1 className="font-display text-4xl font-bold">{t(lang, "kioskInputMethodTitle")}</h1>
+            <p className="text-teal-100 text-lg">{t(lang, "kioskInputMethodSub")}</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+              <button
+                onClick={() => {
+                  setInputMode("voice");
+                  transitionTo("capture");
+                }}
+                className="min-h-[140px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-950 p-6 flex flex-col items-center justify-center gap-3 font-bold text-2xl shadow-lg active:scale-95"
+              >
+                <Mic size={40} />
+                <span>{t(lang, "speak")}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setInputMode("type");
+                  transitionTo("capture");
+                }}
+                className="min-h-[140px] rounded-2xl bg-white/10 hover:bg-white/20 border-2 border-white/20 p-6 flex flex-col items-center justify-center gap-3 font-bold text-2xl shadow-lg active:scale-95"
+              >
+                <FileText size={40} />
+                <span>{t(lang, "typeIt")}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step: Voice / Type Capture */}
+        {step === "capture" && (
+          <div className="flex flex-col gap-6 w-full max-w-xl text-center items-center">
+            <h1 className="font-display text-3xl sm:text-4xl font-bold">{t(lang, "screen2Title")}</h1>
+            <p className="text-teal-100">{t(lang, "screen2Placeholder")}</p>
             
-            <div className="flex flex-col sm:flex-row gap-4 mt-2">
+            {inputMode === "voice" ? (
+              <div className="w-full flex flex-col items-center gap-4">
+                <VoiceCapture
+                  isKiosk={true}
+                  onResult={(text: string) => {
+                    setHeard(text);
+                    transitionTo("confirm_heard");
+                  }}
+                  label={t(lang, "kioskSpeakStart")}
+                  listeningLabel={t(lang, "kioskSpeakListening")}
+                />
+                <button
+                  onClick={() => setInputMode("type")}
+                  className="text-sm text-teal-300 underline font-semibold mt-2"
+                >
+                  {t(lang, "typeIt")} →
+                </button>
+              </div>
+            ) : (
+              <div className="w-full flex flex-col gap-4">
+                <textarea
+                  rows={5}
+                  value={typeText}
+                  onChange={(e) => setTypeText(e.target.value)}
+                  placeholder={t(lang, "screen2Placeholder")}
+                  className="w-full bg-white/10 border-2 border-white/20 rounded-2xl p-4 text-xl text-white focus:outline-none focus:border-marigold-400 resize-none leading-relaxed"
+                />
+                <div className="flex flex-col sm:flex-row gap-3">
+                  {typeText.trim().length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => speakText(typeText.trim(), lang)}
+                      className="min-h-[56px] flex-1 rounded-xl bg-white/10 border border-white/20 text-marigold-300 font-bold flex items-center justify-center gap-2 hover:bg-white/20"
+                    >
+                      <Volume2 size={20} />
+                      <span>{t(lang, "hearWhatITyped")}</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={!typeText.trim()}
+                    onClick={() => {
+                      setHeard(typeText.trim());
+                      transitionTo("confirm_heard");
+                    }}
+                    className="min-h-[56px] flex-1 rounded-xl bg-marigold-500 text-teal-950 font-bold text-lg shadow-md disabled:opacity-50"
+                  >
+                    {t(lang, "continue")} →
+                  </button>
+                </div>
+                <button
+                  onClick={() => setInputMode("voice")}
+                  className="text-sm text-teal-300 underline font-semibold mt-1"
+                >
+                  ← {t(lang, "speak")}
+                </button>
+              </div>
+            )}
+
+            <p className="text-xs text-teal-200/80">{t(lang, "privacyNote")}</p>
+          </div>
+        )}
+
+        {/* Step: Confirm Heard */}
+        {step === "confirm_heard" && (
+          <div className="flex flex-col gap-6 w-full max-w-xl text-center">
+            <h1 className="font-display text-3xl font-bold">{t(lang, "kioskWeHeard")}</h1>
+            <div className="bg-white/10 border-2 border-white/20 rounded-2xl p-6 text-xl text-left leading-relaxed text-marigold-200">
+              “{heard}”
+            </div>
+            <div className="flex items-center justify-center">
+              <button
+                type="button"
+                onClick={() => speakText(heard, lang)}
+                className="px-5 py-2.5 rounded-full bg-white/10 border border-white/30 text-marigold-300 font-bold text-sm flex items-center gap-2 hover:bg-white/20"
+              >
+                <Volume2 size={18} />
+                <span>{t(lang, "listenMyText")}</span>
+              </button>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3 mt-2">
               <button
                 onClick={() => processInputText(heard)}
-                className="flex-1 min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md active:scale-95"
+                className="min-h-[68px] flex-1 rounded-2xl bg-marigold-500 text-teal-950 text-xl font-bold shadow-md"
               >
                 {t(lang, "kioskYesContinue")}
               </button>
               <button
-                onClick={() => {
-                  setHeard("");
-                  transitionTo("capture");
-                }}
-                className="flex-1 min-h-[76px] rounded-2xl border-3 border-white/30 hover:border-white/50 text-white text-xl font-bold active:scale-95"
+                onClick={() => transitionTo("capture")}
+                className="min-h-[68px] flex-1 rounded-2xl border-2 border-white/30 text-white text-lg font-bold"
               >
                 {t(lang, "kioskTryAgain")}
               </button>
@@ -770,648 +875,316 @@ export default function Kiosk() {
           </div>
         )}
 
-        {step === "understanding" && (
-          <div className="flex flex-col items-center gap-4 text-center">
-            <span className="animate-spin text-marigold-400"><Clock size={48} /></span>
-            <h1 className="text-3xl font-semibold">{t(lang, "turningIntoQuestions")}</h1>
-            <p className="text-teal-100 text-lg">{t(lang, "readingStatus")}</p>
-          </div>
-        )}
-
-        {step === "suitability" && understanding && (
-          <div className="w-full max-w-xl flex flex-col gap-6">
-            <h1 className="font-display text-3xl font-bold text-center">{t(lang, "suitabilityTitle")}</h1>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 flex gap-4 items-start shadow-md">
-              <Info className="text-marigold-400 shrink-0 mt-0.5" size={28} />
-              <div>
-                <p className="font-bold text-xl text-marigold-400 uppercase tracking-wide">
-                  {understanding.rti_suitability === "likely" ? t(lang, "suitabilityLikelyLabel") : t(lang, "suitabilityUnlikelyLabel")}
-                </p>
-                <p className="text-white text-lg mt-2 leading-relaxed">{understanding.suitability_reason}</p>
+        {/* Step: Suitability Check */}
+        {step === "suitability" && (
+          <div className="flex flex-col gap-6 w-full max-w-xl text-center">
+            <h1 className="font-display text-3xl sm:text-4xl font-bold">{t(lang, "suitabilityTitle")}</h1>
+            <div className="bg-white/10 border-2 border-white/20 rounded-2xl p-6 text-left space-y-3">
+              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-leaf text-white font-bold text-sm">
+                <CheckCircle size={16} /> {t(lang, "suitabilityLikelyLabel")}
               </div>
-            </div>
-
-            <p className="text-xs text-teal-100/60 italic text-center">{t(lang, "generalGuidance")}</p>
-
-            <button
-              onClick={generateQuestionsForKiosk}
-              className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md mt-2 active:scale-95"
-            >
-              {t(lang, "continue")}
-            </button>
-          </div>
-        )}
-
-        {step === "questions" && (
-          <div className="w-full max-w-2xl flex flex-col gap-6">
-            <h1 className="font-display text-3xl font-bold text-center">{t(lang, "clearRequest")}</h1>
-            
-            <div className="bg-teal-950/40 border border-teal-800/40 p-4 rounded-2xl">
-              <span className="text-xs font-bold text-teal-300 block uppercase tracking-wider mb-1">{t(lang, "yourWords")}</span>
-              <p className="italic text-teal-100">“{draft.rawProblem}”</p>
-            </div>
-
-            <div className="space-y-3">
-              <span className="text-xs font-bold text-marigold-400 block uppercase tracking-wider">{t(lang, "heroTitle")}</span>
-              <ol className="flex flex-col gap-3">
-                {questions.map((q, idx) => (
-                  <li
-                    key={q.id}
-                    className="bg-white/5 border border-white/10 rounded-2xl p-5 flex gap-4 items-start shadow-md text-lg leading-relaxed"
-                  >
-                    <span className="font-display font-black text-marigold-400 text-xl">{idx + 1}</span>
-                    <span>{q.text}</span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-
-            <button
-              onClick={() => transitionTo("documents_choice")}
-              className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md mt-3 active:scale-95"
-            >
-              {t(lang, "confirm")}
-            </button>
-          </div>
-        )}
-
-        {step === "documents_choice" && (
-          <div className="w-full max-w-xl flex flex-col gap-6 text-center">
-            <h1 className="font-display text-3xl font-bold">{t(lang, "docsChoiceTitle")}</h1>
-            <p className="text-teal-100 text-lg font-medium">{t(lang, "docsChoiceSub")}</p>
-
-            <div className="grid grid-cols-1 gap-4 mt-2">
-              <button
-                onClick={() => {
-                  if (verified) {
-                    transitionTo("digilocker_docs");
-                  } else {
-                    transitionTo("digilocker_connect");
-                  }
-                }}
-                className="w-full text-left bg-white/5 border-2 border-white/10 hover:border-white/30 rounded-2xl p-5 flex items-start gap-4 active:scale-95"
-              >
-                <Shield size={28} className="text-marigold-400 mt-1 shrink-0" />
-                <div>
-                  <span className="font-bold text-xl block">{t(lang, "docsChoiceDigiLocker")}</span>
-                  <span className="text-sm text-teal-100/80">{t(lang, "docsChoiceDigiLockerSub")}</span>
-                </div>
-              </button>
-
-              <button
-                onClick={() => transitionTo("upload_pdf")}
-                className="w-full text-left bg-white/5 border-2 border-white/10 hover:border-white/30 rounded-2xl p-5 flex items-start gap-4 active:scale-95"
-              >
-                <Upload size={28} className="text-marigold-400 mt-1 shrink-0" />
-                <div>
-                  <span className="font-bold text-xl block">{t(lang, "docsChoiceUpload")}</span>
-                  <span className="text-sm text-teal-100/80">{t(lang, "docsChoiceUploadSub")}</span>
-                </div>
-              </button>
-            </div>
-
-            <button
-              onClick={() => transitionTo("authority")}
-              className="w-full min-h-[72px] rounded-2xl border-3 border-white/20 hover:border-white/40 text-white text-lg font-bold mt-2"
-            >
-              {t(lang, "skip")}
-            </button>
-          </div>
-        )}
-
-        {step === "digilocker_connect" && (
-          <div className="flex flex-col gap-6 text-center items-center max-w-md">
-            <span className="font-display font-black text-white text-3xl">DigiLocker</span>
-            <span className="bg-marigold-500 text-teal-900 text-xs font-bold uppercase tracking-wider px-3.5 py-1 rounded-full">
-              {t(lang, "verifyConnectSub")}
-            </span>
-            <h2 className="font-display text-2xl font-bold text-white mt-2">{t(lang, "verifyConnectTitle")}</h2>
-            <p className="text-lg text-teal-100 leading-relaxed font-medium">
-              {t(lang, "verifyConnectBody")}
-            </p>
-            <div className="w-full flex flex-col gap-3 mt-4">
-              <button
-                onClick={() => transitionTo("digilocker_auth")}
-                className="w-full min-h-[72px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-xl font-bold active:scale-95"
-              >
-                {t(lang, "verifyConnectButton")}
-              </button>
-              <button
-                onClick={() => setStep("documents_choice")}
-                className="w-full min-h-[72px] rounded-2xl border-2 border-white/25 text-white text-lg font-bold"
-              >
-                {t(lang, "cancel")}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === "digilocker_auth" && (
-          <div className="flex flex-col gap-6 w-full max-w-md">
-            <h2 className="font-display text-3xl font-bold text-center">{t(lang, "verifyChooseTitle")}</h2>
-            
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
-              <p className="font-semibold text-lg text-marigold-400">{t(lang, "verifyChooseSub")}</p>
-              <ul className="space-y-2.5 text-base">
-                <li className="flex items-center gap-2">✓ Identity document</li>
-                <li className="flex items-center gap-2">✓ Address document</li>
-                <li className="flex items-center gap-2">✓ Supporting certificate</li>
-              </ul>
-              <p className="text-sm text-teal-100/70 border-t border-white/10 pt-3 italic">
-                {t(lang, "verifyStatusDisclaimer")}
+              <p className="text-lg text-teal-100 leading-relaxed">
+                {understanding?.suitability_reason || t(lang, "suitabilityHelpText")}
               </p>
             </div>
-
-            <div className="flex flex-col gap-3">
-              <button
-                onClick={() => transitionTo("digilocker_docs")}
-                className="w-full min-h-[72px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-xl font-bold active:scale-95"
-              >
-                {t(lang, "verifyConnectButton")}
-              </button>
-              <button
-                onClick={() => setStep("documents_choice")}
-                className="w-full min-h-[72px] rounded-2xl border-2 border-white/25 text-white text-lg font-bold"
-              >
-                {t(lang, "cancel")}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === "digilocker_docs" && (
-          <div className="w-full max-w-lg flex flex-col gap-6">
-            <h2 className="font-display text-3xl font-bold text-center">{t(lang, "digiDocsTitle")}</h2>
-            <p className="text-teal-100 text-lg text-center font-semibold">{t(lang, "digiDocsSub")}</p>
-
-            <div className="flex flex-col gap-3">
-              {["Address Proof", "Identity Proof", "Scholarship Certificate", "Income Certificate"].map((doc) => {
-                const selected = selectedDigiDocs.includes(doc);
-                return (
-                  <button
-                    key={doc}
-                    onClick={() => toggleDigiDoc(doc)}
-                    className={`w-full text-left rounded-2xl p-5 border-2 flex items-center justify-between font-bold text-xl transition-all ${
-                      selected ? "border-leaf bg-leaf/10 text-leaf" : "border-white/10 bg-white/5 text-white"
-                    }`}
-                  >
-                    <span>{doc}</span>
-                    {selected && <span>✓ Selected</span>}
-                  </button>
-                );
-              })}
-            </div>
-
             <button
-              onClick={handleDigiDocsSubmit}
-              disabled={selectedDigiDocs.length === 0}
-              className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md disabled:opacity-50 mt-3 active:scale-95"
+              onClick={generateQuestionsForKiosk}
+              className="min-h-[72px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-2xl font-bold shadow-md hover:bg-marigold-400 mt-2"
             >
-              {t(lang, "digiDocsButton")}
+              {t(lang, "continue")} →
             </button>
           </div>
         )}
 
-        {step === "upload_pdf" && (
-          <div className="w-full max-w-lg flex flex-col gap-6 text-center">
-            <h2 className="font-display text-3xl font-bold">{t(lang, "uploadTitle")}</h2>
-            <p className="text-teal-100 text-lg font-medium">{t(lang, "uploadSub")}</p>
-
-            {!uploadedPDFName ? (
-              <label className="border-3 border-dashed border-white/20 hover:border-white/40 rounded-2xl p-10 flex flex-col items-center justify-center gap-4 cursor-pointer min-h-[200px]">
-                <Upload size={40} className="text-marigold-400" />
-                <span className="text-xl font-bold">{t(lang, "uploadButton")}</span>
-                <span className="text-sm text-teal-100/70">{t(lang, "docsChoiceUploadSub")}</span>
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  onChange={handlePDFUploadSimulation}
-                  className="hidden"
-                />
-              </label>
-            ) : (
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4 text-left">
-                <div className="flex items-center gap-3">
-                  <FileText className="text-marigold-400" size={32} />
-                  <div className="flex-1 truncate">
-                    <p className="font-bold text-lg text-white truncate">{uploadedPDFName}</p>
-                    <p className="text-sm text-leaf">✓ Ready</p>
-                  </div>
-                </div>
-                <div className="flex gap-3 pt-2">
-                  <button
-                    onClick={() => transitionTo("documents_attached")}
-                    className="flex-1 min-h-[64px] rounded-xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-xl font-bold shadow-md active:scale-95"
-                  >
-                    {t(lang, "continue")}
-                  </button>
-                  <button
-                    onClick={() => setUploadedPDFName(null)}
-                    className="flex-1 min-h-[64px] rounded-xl border border-white/25 text-white text-lg font-bold"
-                  >
-                    {t(lang, "uploadChooseAnother")}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {uploadError && (
-              <div className="bg-brick/20 border border-brick/40 p-4 rounded-2xl text-left flex gap-3">
-                <AlertCircle className="text-brick shrink-0" size={24} />
-                <div>
-                  <p className="font-bold text-brick">{t(lang, "uploadErrorTitle")}</p>
-                  <p className="text-sm text-white/90 mt-1">{uploadError}</p>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {step === "documents_attached" && (
-          <div className="w-full max-w-lg flex flex-col gap-6 text-center">
-            <h2 className="font-display text-3xl font-bold">{t(lang, "attachedTitle")}</h2>
-            <p className="text-teal-100 text-lg font-medium">{t(lang, "attachedSub")}</p>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-3 text-left">
-              <p className="text-xs font-bold text-marigold-400 tracking-wider uppercase">{t(lang, "reviewDocumentsLabel")}</p>
-              <ul className="space-y-2">
-                {attachedDocs.map((doc, i) => (
-                  <li key={i} className="flex items-center gap-2 font-bold text-lg text-white">
-                    <span className="text-leaf">✓</span> {doc}
-                  </li>
-                ))}
-              </ul>
+        {/* Step: Formulated Questions */}
+        {step === "questions" && (
+          <div className="flex flex-col gap-6 w-full max-w-xl">
+            <div className="text-center">
+              <h1 className="font-display text-3xl font-bold">{t(lang, "clearRequest")}</h1>
+              <p className="text-sm text-teal-200 mt-1">{t(lang, "questionHelpText")}</p>
             </div>
-
-            <div className="flex flex-col gap-3 mt-4">
-              <button
-                onClick={() => transitionTo("authority")}
-                className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md active:scale-95"
-              >
-                {t(lang, "continue")}
-              </button>
-              <button
-                onClick={() => {
-                  setAttachedDocs([]);
-                  setSelectedDigiDocs([]);
-                  setUploadedPDFName(null);
-                  transitionTo("documents_choice");
-                }}
-                className="w-full min-h-[72px] rounded-2xl border-2 border-white/25 text-white text-lg font-bold"
-              >
-                {t(lang, "attachedButtonChange")}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === "authority" && (
-          <div className="w-full max-w-xl flex flex-col gap-6">
-            <h1 className="font-display text-3xl font-bold text-center">{t(lang, "authorityTitle")}</h1>
             
-            <div className="relative">
-              <Search className="absolute left-4 top-4 text-teal-900" size={24} />
-              <input
-                type="text"
-                placeholder={t(lang, "authoritySearch")}
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  searchKioskAuthorities(e.target.value);
-                }}
-                className="w-full min-h-[56px] rounded-xl pl-12 pr-4 text-xl text-teal-955 font-medium bg-white focus-visible:outline-marigold-400"
-              />
+            <div className="space-y-4">
+              {questions.map((q, i) => (
+                <div key={q.id} className="bg-white/10 border-2 border-white/20 focus-within:border-marigold-400 rounded-2xl p-4 flex flex-col gap-2.5 transition-all">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="w-8 h-8 rounded-full bg-marigold-500 text-teal-950 font-bold flex items-center justify-center shrink-0">
+                        {i + 1}
+                      </span>
+                      <span className="text-xs font-bold text-marigold-300 uppercase tracking-wider">
+                        {t(lang, "editQuestionLabel")} {i + 1}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => speakText(q.text, lang)}
+                      className="text-marigold-300 hover:text-white flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 bg-white/10 rounded-full active:scale-95 transition-all"
+                    >
+                      <Volume2 size={15} />
+                      <span>{t(lang, "listen")}</span>
+                    </button>
+                  </div>
+
+                  <textarea
+                    value={q.text}
+                    onChange={(e) => {
+                      const newText = e.target.value;
+                      setQuestions((prev) => {
+                        const updated = prev.map((item) => (item.id === q.id ? { ...item, text: newText } : item));
+                        updateDraft({ questions: updated });
+                        return updated;
+                      });
+                    }}
+                    rows={3}
+                    aria-label={`${t(lang, "editQuestionLabel")} ${i + 1}`}
+                    className="w-full bg-black/20 border border-white/20 focus:border-marigold-400 focus:outline-none rounded-xl p-3 text-lg text-white font-medium resize-none leading-relaxed"
+                  />
+                </div>
+              ))}
             </div>
 
+            <button
+              onClick={() => {
+                const hasEmpty = questions.some((q) => !q.text || q.text.trim().length === 0);
+                if (hasEmpty) {
+                  speakText(t(lang, "questionEmptyError"), lang);
+                  return;
+                }
+                updateDraft({ questions });
+                searchKioskAuthorities(understanding?.topic || "general");
+                transitionTo("authority");
+              }}
+              className="min-h-[72px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-2xl font-bold shadow-md hover:bg-marigold-400 mt-2 active:scale-98"
+            >
+              {t(lang, "looksGood")}
+            </button>
+          </div>
+        )}
+
+        {/* Step: Authority Match */}
+        {step === "authority" && (
+          <div className="flex flex-col gap-6 w-full max-w-xl">
+            <h1 className="font-display text-3xl font-bold text-center">{t(lang, "authorityTitle")}</h1>
             <div className="space-y-3">
-              <span className="text-xs font-bold text-marigold-400 block uppercase tracking-wider">{t(lang, "reviewAuthorityLabel")}</span>
-              {authoritiesList.length === 0 ? (
+              {authoritiesList.slice(0, 3).map((auth) => (
                 <button
-                  onClick={() => searchKioskAuthorities("")}
-                  className="w-full text-center p-8 bg-white/5 rounded-2xl text-teal-100 font-bold"
+                  key={auth.id}
+                  onClick={() => handleKioskConfirmAuthority(auth)}
+                  className="w-full text-left bg-white/10 hover:bg-white/20 border-2 border-white/20 hover:border-marigold-400 rounded-2xl p-5 transition-all flex flex-col gap-1"
                 >
-                  {t(lang, "authorityNotFound")}
+                  <span className="font-bold text-xl text-marigold-300">{getLocalizedDepartmentName(auth, lang)}</span>
+                  <span className="text-sm text-teal-100">{auth.department}</span>
+                  <span className="text-xs text-teal-200/80 mt-1">{auth.whyMatch}</span>
                 </button>
-              ) : (
-                <div className="flex flex-col gap-3 max-h-[300px] overflow-y-auto pr-1">
-                  {authoritiesList.map((auth) => (
-                    <button
-                      key={auth.id}
-                      onClick={() => handleKioskConfirmAuthority(auth)}
-                      className="w-full text-left bg-white/5 border border-white/10 hover:border-white/30 rounded-2xl p-5 flex flex-col gap-1 transition-all active:scale-95"
-                    >
-                      <span className="font-bold text-xl text-white">{auth.name}</span>
-                      <span className="text-sm text-teal-100/80 italic">{auth.whyMatch}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
+              ))}
             </div>
           </div>
         )}
 
-        {step === "review" && selectedAuthority && (
-          <div className="w-full max-w-2xl flex flex-col gap-6">
+        {/* Step: Review */}
+        {step === "review" && (
+          <div className="flex flex-col gap-6 w-full max-w-xl">
             <h1 className="font-display text-3xl font-bold text-center">{t(lang, "reviewTitle")}</h1>
-
-            <div className="space-y-4">
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-                <span className="text-xs font-bold text-marigold-400 block uppercase tracking-wider mb-2">{t(lang, "reviewQuestionsLabel")}</span>
-                <ol className="list-decimal list-inside space-y-1.5 text-base text-teal-100">
+            <div className="bg-white/10 border-2 border-white/20 rounded-2xl p-6 space-y-4">
+              <div>
+                <span className="text-xs uppercase tracking-wider text-teal-200 block font-bold">{t(lang, "reviewAuthorityLabel")}</span>
+                <span className="text-xl font-bold text-marigold-300">
+                  {getLocalizedDepartmentName(selectedAuthority || draft.authority, lang)}
+                </span>
+              </div>
+              <div>
+                <span className="text-xs uppercase tracking-wider text-teal-200 block font-bold">{t(lang, "reviewQuestionsLabel")}</span>
+                <ul className="list-disc list-inside text-sm text-teal-100 space-y-1 mt-1">
                   {questions.map((q) => (
                     <li key={q.id}>{q.text}</li>
                   ))}
-                </ol>
+                </ul>
               </div>
-
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5 flex justify-between items-center">
-                <div>
-                  <span className="text-xs font-bold text-marigold-400 block uppercase tracking-wider">{t(lang, "reviewAuthorityLabel")}</span>
-                  <span className="text-lg font-bold text-white block mt-0.5">{selectedAuthority.name}</span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-                  <span className="text-xs font-bold text-marigold-400 block uppercase tracking-wider">{t(lang, "reviewApplicantLabel")}</span>
-                  <span className="text-lg font-bold text-white block mt-0.5">{t(lang, "reviewApplicantValue")}</span>
-                </div>
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-                  <span className="text-xs font-bold text-marigold-400 block uppercase tracking-wider">{t(lang, "paymentTitle")}</span>
-                  <span className="text-lg font-bold text-white block mt-0.5">₹10</span>
-                </div>
+              <div>
+                <span className="text-xs uppercase tracking-wider text-teal-200 block font-bold">{t(lang, "paymentTitle")}</span>
+                <span className="text-lg font-bold text-white">₹10 ({t(lang, "standardRtiFee")})</span>
               </div>
             </div>
-
-            <div className="bg-brick/20 border border-brick/30 rounded-2xl p-5 flex gap-3">
-              <AlertCircle className="text-brick shrink-0 mt-0.5" size={24} />
-              <p className="text-base text-white/90">
-                {t(lang, "prototypeWarning")}
-              </p>
-            </div>
-
             <button
               onClick={() => transitionTo("payment_choose")}
-              className="w-full min-h-[80px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md active:scale-95"
+              className="min-h-[72px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-2xl font-bold shadow-md hover:bg-marigold-400"
             >
               {t(lang, "submitDemo")}
             </button>
           </div>
         )}
 
+        {/* Step: Payment Simulation */}
         {step === "payment_choose" && (
-          <div className="w-full max-w-md flex flex-col gap-6 text-center">
+          <div className="flex flex-col gap-6 w-full max-w-xl text-center">
             <h1 className="font-display text-3xl font-bold">{t(lang, "paymentTitle")}</h1>
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6">
-              <p className="text-5xl font-bold text-marigold-400 font-display">₹10</p>
-              <p className="text-xs font-bold uppercase tracking-wider text-teal-100 mt-2">
-                {t(lang, "demoPaymentNote")}
-              </p>
+            <div className="bg-white/10 border-2 border-marigold-400 rounded-2xl p-6">
+              <span className="font-display text-5xl font-black text-marigold-400">₹10</span>
+              <p className="text-xs font-bold uppercase text-teal-200 mt-2">{t(lang, "demoPaymentNote")}</p>
             </div>
-            
             <div className="flex flex-col gap-3.5 mt-2">
               <button
-                onClick={() => handlePaymentInit("upi")}
-                className="w-full min-h-[72px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-xl font-bold active:scale-95"
+                onClick={() => {
+                  setPayMethod("upi");
+                  handleKioskPaymentOutcome(true);
+                }}
+                className="min-h-[72px] w-full rounded-2xl bg-leaf text-white text-2xl font-bold shadow-md flex items-center justify-center gap-2 hover:bg-leaf/90"
               >
-                {t(lang, "mockUpi")}
+                <CheckCircle size={24} /> {t(lang, "simulateSuccess")}
               </button>
+
               <button
-                onClick={() => handlePaymentInit("netbanking")}
-                className="w-full min-h-[72px] rounded-2xl border-2 border-white/20 hover:bg-white/10 text-white text-xl font-bold active:scale-95"
+                onClick={() => {
+                  setPayMethod("upi");
+                  handleKioskPaymentOutcome(false);
+                }}
+                className="min-h-[64px] w-full rounded-2xl bg-brick text-white text-xl font-bold shadow-md flex items-center justify-center gap-2 hover:bg-brick/90"
               >
-                {t(lang, "mockNetBanking")}
+                <AlertCircle size={22} /> {t(lang, "simulateFailure")}
               </button>
             </div>
-            <p className="text-sm text-teal-100/60 mt-1">{t(lang, "paymentSecurityNote")}</p>
           </div>
         )}
 
-        {step === "payment_choose" && payMethod && (
-          <div className="fixed inset-0 bg-teal-950/95 flex items-center justify-center p-6 z-30">
-            <div className="bg-teal-900 border border-teal-800 rounded-3xl p-8 max-w-md w-full text-center space-y-6 shadow-2xl">
-              <h2 className="font-display text-2xl font-bold">Simulate Payment Outcome</h2>
-              <p className="text-teal-100 text-sm">Select the outcome of your ₹10 mock payment transaction.</p>
-              
-              <div className="flex flex-col gap-3">
-                <button
-                  onClick={() => handleKioskPaymentOutcome(true)}
-                  className="min-h-[64px] rounded-2xl bg-leaf text-white font-bold text-xl hover:bg-leaf/90 flex items-center justify-center gap-2"
-                >
-                  Simulate Payment Success
-                </button>
-                <button
-                  onClick={() => handleKioskPaymentOutcome(false)}
-                  className="min-h-[64px] rounded-2xl bg-brick text-white font-bold text-xl hover:bg-brick/90 flex items-center justify-center gap-2"
-                >
-                  Simulate Payment Failure
-                </button>
-              </div>
-            </div>
+        {/* Step: Payment Processing / Delayed */}
+        {(step === "payment_processing" || step === "payment_delayed") && (
+          <div className="flex flex-col items-center gap-6 py-12 text-center">
+            <Loader2 className="animate-spin text-marigold-400" size={64} />
+            <h2 className="text-2xl font-bold">{t(lang, "paymentProcessing")}</h2>
           </div>
         )}
 
-        {step === "payment_processing" && (
-          <div className="flex flex-col items-center gap-4 text-center">
-            <span className="animate-spin text-marigold-400"><Clock size={40} /></span>
-            <h1 className="text-2xl font-bold">{t(lang, "paymentProcessing")}</h1>
-            <p className="text-teal-100">Contacting synthetic mock payment provider.</p>
-          </div>
-        )}
-
-        {step === "payment_delayed" && (
-          <div className="flex flex-col items-center gap-4 text-center max-w-xs">
-            <AlertCircle className="text-marigold-400" size={40} />
-            <h1 className="text-2xl font-bold">{t(lang, "paymentDelayedTitle")}</h1>
-            <p className="text-teal-100 text-sm">{t(lang, "paymentDelayedSub")}</p>
-            <span className="animate-spin text-marigold-400 mt-2"><Clock size={20} /></span>
-          </div>
-        )}
-
+        {/* Step: Payment Failed */}
         {step === "payment_failed" && (
-          <div className="flex flex-col gap-4 text-center items-center max-w-sm">
-            <div className="w-16 h-16 rounded-full bg-brick/20 flex items-center justify-center text-brick shadow-md">
-              <AlertCircle size={32} />
+          <div className="flex flex-col items-center gap-6 text-center max-w-md">
+            <div className="w-20 h-20 rounded-full bg-brick flex items-center justify-center text-white">
+              <AlertCircle size={44} />
             </div>
-            <h1 className="text-2xl font-bold">{t(lang, "paymentFailedTitle")}</h1>
+            <h2 className="text-3xl font-bold">{t(lang, "paymentFailedTitle")}</h2>
             <p className="text-teal-100">{t(lang, "paymentFailedSub")}</p>
             <button
-              onClick={() => {
-                setPayMethod(null);
-                transitionTo("payment_choose");
-              }}
-              className="w-full min-h-[72px] rounded-2xl bg-marigold-500 text-teal-950 text-xl font-bold mt-4"
+              onClick={() => transitionTo("payment_choose")}
+              className="min-h-[68px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-xl font-bold shadow-md mt-4"
             >
               {t(lang, "paymentTryAgain")}
             </button>
           </div>
         )}
 
+        {/* Step: Submitted Confirmation */}
         {step === "submitted" && (
-          <div className="w-full max-w-md flex flex-col gap-6 text-center items-center">
-            <div className="w-16 h-16 rounded-full bg-leaf/20 flex items-center justify-center text-leaf border border-leaf/30 shadow-md">
-              <CheckCircle size={36} />
+          <div className="flex flex-col items-center gap-6 text-center max-w-xl">
+            <div className="w-20 h-20 rounded-full bg-leaf flex items-center justify-center text-white shadow-lg">
+              <Check size={48} />
             </div>
             <h1 className="font-display text-4xl font-bold">{t(lang, "submittedTitle")}</h1>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 w-full text-left space-y-3">
-              <div className="flex justify-between items-center border-b border-white/10 pb-2.5">
-                <span className="text-teal-100/70 text-sm">{t(lang, "requestId")}</span>
-                <span className="font-mono font-bold text-lg text-white">{requestId}</span>
+            <div className="bg-white/10 border-2 border-white/20 rounded-2xl p-6 w-full text-left space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-teal-200">{t(lang, "requestId")}:</span>
+                <span className="font-mono font-bold text-marigold-300 text-lg">{requestId}</span>
               </div>
-              <div className="flex justify-between items-center border-b border-white/10 pb-2.5">
-                <span className="text-teal-100/70 text-sm">{t(lang, "authority")}</span>
-                <span className="font-bold text-white">{selectedAuthority?.name}</span>
+              <div className="flex justify-between text-sm">
+                <span className="text-teal-200">{t(lang, "authority")}:</span>
+                <span className="font-bold">{getLocalizedDepartmentName(selectedAuthority || draft.authority, lang)}</span>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-teal-100/70 text-sm">{t(lang, "endStatusLabel")}</span>
-                <span className="font-bold text-marigold-400">{t(lang, "status_SUBMITTED")}</span>
+              <div className="flex justify-between text-sm">
+                <span className="text-teal-200">{t(lang, "date")}:</span>
+                <span className="font-bold">{new Date().toLocaleDateString(LOCALE_MAP[lang] ?? "en-IN")}</span>
               </div>
             </div>
 
-            <p className="text-xs text-teal-100/60 italic leading-relaxed">
-              {t(lang, "simulatedNote")}
-            </p>
-
-            <div className="w-full flex flex-col gap-3 mt-4">
-              <button
-                onClick={() => transitionTo("tracking")}
-                className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md active:scale-95"
-              >
-                {t(lang, "trackRequest")}
-              </button>
-              
+            <div className="flex flex-col gap-3.5 w-full mt-2">
               <button
                 onClick={printReceipt}
-                disabled={isReceiptPrinting}
-                className="w-full min-h-[72px] rounded-2xl border-2 border-white/20 text-white hover:bg-white/10 text-lg font-bold flex items-center justify-center gap-2"
+                className="min-h-[72px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-xl font-bold flex items-center justify-center gap-3 shadow-md"
               >
-                {isReceiptPrinting ? (
-                  t(lang, "kioskReceiptPrinting")
-                ) : receiptPrinted ? (
-                  t(lang, "kioskReceiptPrinted")
-                ) : (
-                  <>
-                    <Printer size={20} /> {t(lang, "kioskPrintReceipt")}
-                  </>
-                )}
+                <Printer size={24} />
+                <span>{receiptPrinted ? t(lang, "kioskReceiptPrinted") : isReceiptPrinting ? t(lang, "kioskReceiptPrinting") : t(lang, "kioskPrintReceipt")}</span>
               </button>
 
               <button
-                onClick={resetSession}
-                className="w-full min-h-[72px] rounded-2xl bg-white/10 hover:bg-white/20 text-white font-bold text-lg mt-2 active:scale-95"
+                onClick={() => transitionTo("tracking")}
+                className="min-h-[64px] w-full rounded-2xl border-2 border-white/30 text-white text-lg font-bold"
               >
-                {t(lang, "kioskFinish")}
+                {t(lang, "trackRequest")} →
               </button>
             </div>
           </div>
         )}
 
+        {/* Step: Tracking */}
         {step === "tracking" && (
-          <div className="w-full max-w-xl flex flex-col gap-6">
+          <div className="flex flex-col gap-6 w-full max-w-xl">
             <h1 className="font-display text-3xl font-bold text-center">{t(lang, "trackingTitle")}</h1>
-            <p className="text-center font-mono text-lg text-marigold-400">{requestId}</p>
-
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
-              <div className="flex items-center gap-3">
-                <span className="w-6 h-6 rounded-full bg-leaf text-white flex items-center justify-center text-xs font-bold font-mono">✓</span>
-                <span className="font-semibold text-lg">{t(lang, "status_SUBMITTED")}</span>
+            <div className="bg-white/10 border-2 border-white/20 rounded-2xl p-6 space-y-4">
+              <div className="flex items-center gap-3 text-leaf font-bold">
+                <CheckCircle size={24} />
+                <span>{t(lang, "status_SUBMITTED")} — {t(lang, "status_registered_desc")}</span>
               </div>
-              <div className="flex items-center gap-3 border-l-2 border-teal-800 ml-3 pl-3">
-                <span className="w-6 h-6 rounded-full bg-leaf text-white flex items-center justify-center text-xs font-bold font-mono">✓</span>
-                <span className="font-semibold text-lg">{t(lang, "status_RECEIVED")}</span>
+              <div className="flex items-center gap-3 text-leaf font-bold">
+                <CheckCircle size={24} />
+                <span>{t(lang, "status_RECEIVED")} — {t(lang, "status_received_desc")}</span>
               </div>
-              <div className="flex items-center gap-3 border-l-2 border-teal-800 ml-3 pl-3">
-                <span className="w-6 h-6 rounded-full bg-marigold-500 text-teal-950 flex items-center justify-center text-xs font-bold font-mono">•</span>
-                <span className="font-bold text-marigold-400 text-lg">{t(lang, "status_UNDER_REVIEW")}</span>
+              <div className="flex items-center gap-3 text-marigold-400 font-bold">
+                <Clock size={24} />
+                <span>{t(lang, "status_UNDER_REVIEW")} — {t(lang, "status_review_desc")}</span>
               </div>
             </div>
 
-            <div className="bg-leaf/25 border-2 border-leaf/40 rounded-2xl p-5 text-center">
-              <p className="text-sm text-teal-100">{t(lang, "doINeedToDo")}</p>
-              <p className="font-black text-leaf text-2xl mt-1 uppercase tracking-wide">🟢 {t(lang, "noActionNeeded")}</p>
-            </div>
-
-            <div className="flex flex-col gap-3 mt-2">
-              <button
-                onClick={() => transitionTo("explain_status")}
-                className="w-full min-h-[72px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-xl font-bold shadow-md active:scale-95"
-              >
-                {t(lang, "explainUnderReview")}
-              </button>
-              <button
-                onClick={resetSession}
-                className="w-full min-h-[72px] rounded-2xl border-2 border-white/20 text-white text-lg font-bold active:scale-95"
-              >
-                {t(lang, "home")}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {step === "explain_status" && (
-          <div className="w-full max-w-xl flex flex-col gap-5">
-            <div className="text-center">
-              <span className="bg-teal-950 text-teal-300 font-mono text-sm px-3.5 py-1 rounded-full border border-teal-800">
-                {t(lang, "statusOfficialLabel")}
-              </span>
-              <h1 className="font-display text-3xl font-bold mt-3">{t(lang, "whatItMeans")}</h1>
-            </div>
-
-            <div className="space-y-4 mt-2">
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-                <p className="text-xs font-bold text-marigold-400 tracking-wider uppercase mb-1">{t(lang, "whatHappened")}</p>
-                <p className="text-lg text-white font-medium">{t(lang, "statusWhatHappenedBody")}</p>
-              </div>
-
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-                <p className="text-xs font-bold text-marigold-400 tracking-wider uppercase mb-1">{t(lang, "whatItMeans")}</p>
-                <p className="text-lg text-white leading-relaxed font-medium">
-                  {t(lang, "statusWhatItMeansBody")}
-                </p>
-              </div>
-
-              <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-                <p className="text-xs font-bold text-marigold-400 tracking-wider uppercase mb-1">{t(lang, "whatShouldYouDo")}</p>
-                <p className="text-lg text-white font-medium">{t(lang, "statusWhatShouldYouDoBody")}</p>
-              </div>
+            <div className="bg-leaf/20 border border-leaf/40 rounded-2xl p-4 text-center">
+              <p className="font-bold text-leaf text-lg">🟢 {t(lang, "noActionNeeded")}</p>
             </div>
 
             <button
-              onClick={() => transitionTo("tracking")}
-              className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md mt-4 active:scale-95"
+              onClick={() => transitionTo("explain_status")}
+              className="min-h-[64px] w-full rounded-2xl bg-white/10 border-2 border-white/30 text-white text-lg font-bold flex items-center justify-center gap-2"
             >
-              {t(lang, "gotIt")}
+              <Info size={20} /> {t(lang, "explainUnderReview")}
+            </button>
+          </div>
+        )}
+
+        {/* Step: Under Review Explanation */}
+        {step === "explain_status" && (
+          <div className="flex flex-col gap-6 w-full max-w-xl text-center">
+            <h1 className="font-display text-3xl font-bold">{t(lang, "explainUnderReviewTitle")}</h1>
+            <div className="bg-white/10 border-2 border-white/20 rounded-2xl p-6 text-left space-y-4">
+              <p className="text-xl text-teal-100 leading-relaxed font-medium">
+                {t(lang, "explainUnderReviewElderlyText")}
+              </p>
+              <div className="pt-3 border-t border-white/10 text-sm text-marigold-300 font-bold">
+                ✓ {t(lang, "appealDisposalTimeline")}
+              </div>
+            </div>
+            <button
+              onClick={resetSession}
+              className="min-h-[68px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-xl font-bold shadow-md"
+            >
+              {t(lang, "kioskFinish")}
             </button>
           </div>
         )}
       </main>
 
-      {/* Timeout Warning Overlay Modal */}
+      {/* Accessible Timeout Modal */}
       {showTimeoutWarning && (
-        <div className="fixed inset-0 bg-teal-950/95 flex items-center justify-center p-6 z-50">
-          <div className="bg-teal-900 border border-teal-850 rounded-3xl p-8 max-w-md w-full text-center space-y-6 shadow-2xl">
-            <div className="w-16 h-16 rounded-full bg-marigold-500/10 text-marigold-400 flex items-center justify-center mx-auto shadow-md">
-              <Clock size={36} />
-            </div>
-            
-            <h2 className="font-display text-3xl font-bold">{t(lang, "kioskTimeoutTitle")}</h2>
-            
-            <p className="text-teal-100 text-lg leading-relaxed">
-              {t(lang, "kioskTimeoutSub")}
-            </p>
-
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-teal-900 border-3 border-marigold-400 rounded-3xl p-8 max-w-md w-full text-center space-y-6 shadow-2xl">
+            <Clock size={56} className="text-marigold-400 mx-auto animate-pulse" />
+            <h2 className="font-display text-3xl font-bold text-white">{t(lang, "kioskTimeoutTitle")}</h2>
+            <p className="text-teal-100 text-lg leading-relaxed">{t(lang, "kioskTimeoutSub")}</p>
             <div className="flex flex-col gap-3">
               <button
                 onClick={handleContinueSession}
-                className="w-full min-h-[76px] rounded-2xl bg-marigold-500 hover:bg-marigold-400 text-teal-955 text-2xl font-bold shadow-md active:scale-95"
+                className="min-h-[68px] w-full rounded-2xl bg-marigold-500 text-teal-950 text-2xl font-black shadow-lg"
               >
                 {t(lang, "kioskTimeoutContinue")}
               </button>
               <button
                 onClick={resetSession}
-                className="w-full min-h-[64px] rounded-2xl border-2 border-white/25 text-white font-bold text-lg active:scale-95"
+                className="min-h-[56px] w-full rounded-2xl border-2 border-white/30 text-white font-bold"
               >
                 {t(lang, "kioskTimeoutStartOver")}
               </button>

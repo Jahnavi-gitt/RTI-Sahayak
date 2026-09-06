@@ -3,19 +3,29 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import Shell from "../components/Shell";
 import Button from "../components/Button";
 import VoiceCapture from "../components/VoiceCapture";
+import ListenButton from "../components/ListenButton";
 import { useApp } from "../context/AppContext";
 import { t } from "../i18n/strings";
 import type { RtiRequest } from "../types";
 
 const MAX_LEN = 600;
-const DEMO_TEXT = "My scholarship hasn't come for 4 months and nobody is telling me what's happening.";
+const DEMO_TEXTS: Record<string, string> = {
+  en: "My scholarship hasn't come for 4 months and nobody is telling me what's happening.",
+  hi: "मेरी छात्रवृत्ति 4 महीने से नहीं आई है और कोई नहीं बता रहा कि क्या हो रहा है।",
+  ta: "எனது கல்வி உதவித்தொகை 4 மாதங்களாக வரவில்லை, என்ன நடக்கிறது என்று யாரும் சொல்லவில்லை.",
+  te: "నా స్కాలర్‌షిప్ 4 నెలలుగా రాలేదు, ఏమి జరుగుతుందో ఎవరూ చెప్పడం లేదు.",
+  ml: "എന്റെ സ്കോളർഷിപ്പ് 4 മാസമായി വന്നിട്ടില്ല, എന്താണ് സംഭവിക്കുന്നതെന്ന് ആരും പറയുന്നില്ല.",
+  kn: "ನನ್ನ ವಿದ್ಯಾರ್ಥಿವೇತನ 4 ತಿಂಗಳಿಂದ ಬಂದಿಲ್ಲ ಮತ್ತು ಏನಾಗುತ್ತಿದೆ ಎಂದು ಯಾರೂ ಹೇಳುತ್ತಿಲ್ಲ.",
+  mr: "माझी शिष्यवृत्ती ४ महिन्यांपासून आलेली नाही आणि काय घडत आहे ते कोणी सांगत नाही.",
+  bn: "আমার স্কলারশিপ ৪ মাস ধরে আসেনি এবং কী হচ্ছে তা কেউ বলছে না।"
+};
 
 export default function DescribeProblem() {
   const { lang, updateDraft, requests } = useApp();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const isDemo = params.get("demo") === "1";
-  const [text, setText] = useState(isDemo ? DEMO_TEXT : "");
+  const [text, setText] = useState(isDemo ? (DEMO_TEXTS[lang] || DEMO_TEXTS.en) : "");
   const [touched, setTouched] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<RtiRequest | null>(null);
 
@@ -48,7 +58,12 @@ export default function DescribeProblem() {
   }
 
   function proceedToUnderstanding() {
-    updateDraft({ rawProblem: text.trim() });
+    updateDraft({
+      rawProblem: text.trim(),
+      understanding: null,
+      questions: [],
+      authority: null
+    });
     navigate("/understanding");
   }
 
@@ -109,8 +124,9 @@ export default function DescribeProblem() {
 
             <VoiceCapture
               label={`🎤 ${t(lang, "speak")}`}
-              listeningLabel="I'm listening…"
-              onResult={(spoken) => setText((prev) => (prev ? `${prev} ${spoken}` : spoken))}
+              listeningLabel={t(lang, "listening")}
+              onPartialResult={(partial) => setText(partial)}
+              onResult={(spoken) => setText(spoken)}
             />
 
             <div>
@@ -127,8 +143,15 @@ export default function DescribeProblem() {
                 aria-describedby="charcount privacynote"
                 className="w-full rounded-card border-2 border-teal-100 focus-visible:border-teal-500 p-4 text-lg leading-relaxed resize-none bg-white"
               />
-              <div id="charcount" className="text-right text-xs text-ink/50 mt-1">
-                {text.length} / {MAX_LEN}
+              <div className="flex items-center justify-between mt-1">
+                {text.trim().length > 0 ? (
+                  <ListenButton text={text.trim()} label={t(lang, "listenMyText")} />
+                ) : (
+                  <span />
+                )}
+                <div id="charcount" className="text-right text-xs text-ink/50">
+                  {text.length} / {MAX_LEN}
+                </div>
               </div>
             </div>
 

@@ -32,7 +32,8 @@ export default function Suitability() {
   }, [understanding, navigate]);
 
   if (!understanding) return null;
-  const style = STYLE[understanding.rti_suitability];
+  const suitabilityKey = (understanding.rti_suitability || "likely") as keyof typeof STYLE;
+  const style = STYLE[suitabilityKey] || STYLE.likely;
   const Icon = style.icon;
   const isAction = understanding.goal === "request_action";
 

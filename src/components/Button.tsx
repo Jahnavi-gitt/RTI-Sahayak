@@ -7,7 +7,7 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const base =
-  "min-h-[52px] px-6 rounded-card font-body font-semibold text-[17px] transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed";
+  "min-h-[52px] px-6 rounded-card font-body font-semibold text-base sm:text-lg transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed";
 
 const variants: Record<string, string> = {
   primary: "bg-teal-600 text-white hover:bg-teal-700 active:bg-teal-900",

@@ -4,9 +4,11 @@ import Shell from "../components/Shell";
 import Button from "../components/Button";
 import { useApp } from "../context/AppContext";
 import { t } from "../i18n/strings";
+import { downloadReceiptPdf } from "../utils/pdfGenerator";
+import { getLocalizedDepartmentName } from "../data/departments";
 
 export default function Submitted() {
-  const { lang, requests } = useApp();
+  const { lang, requests, currentUser } = useApp();
   const navigate = useNavigate();
   const { id } = useParams();
   const request = requests.find((r) => r.id === id);
@@ -17,24 +19,7 @@ export default function Submitted() {
   }
 
   function downloadReceipt() {
-    const lines = [
-      t(lang, "receiptHeader"),
-      t(lang, "receiptSimulatedNote"),
-      "",
-      `${t(lang, "requestId")}: ${request!.id}`,
-      `${t(lang, "authority")}: ${request!.authority.name}`,
-      `${t(lang, "date")}: ${new Date(request!.createdAt).toLocaleDateString(lang === "en" ? "en-IN" : "hi-IN", { day: "2-digit", month: "long", year: "numeric" })}`,
-      "",
-      t(lang, "receiptQuestionsHeader"),
-      ...request!.questions.map((q, i) => `${i + 1}. ${q.text}`),
-    ].join("\n");
-    const blob = new Blob([lines], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${request!.id}-demo-receipt.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadReceiptPdf(request!, lang, currentUser?.name);
   }
 
   return (
@@ -45,7 +30,7 @@ export default function Submitted() {
 
         <div className="bg-white border-2 border-teal-100 rounded-card p-5 w-full text-left space-y-2">
           <Row label={t(lang, "requestId")} value={request.id} mono />
-          <Row label={t(lang, "authority")} value={request.authority.name} />
+          <Row label={t(lang, "authority")} value={getLocalizedDepartmentName(request.authority, lang)} />
           <Row
             label={t(lang, "date")}
             value={new Date(request.createdAt).toLocaleDateString("en-IN", {

@@ -83,9 +83,14 @@ export default function SignIn() {
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-bold text-teal-700 uppercase tracking-wide">
-                {t(lang, "createPin")}
-              </label>
+              <div className="flex justify-between items-center">
+                <label className="text-xs font-bold text-teal-700 uppercase tracking-wide">
+                  {t(lang, "enterPin")}
+                </label>
+                <Link to="/forgot-pin" className="text-xs text-teal-700 font-bold hover:underline">
+                  {t(lang, "forgotPin")}
+                </Link>
+              </div>
               <input
                 type="password"
                 maxLength={6}
@@ -104,7 +109,7 @@ export default function SignIn() {
 
             <div className="bg-marigold-50 text-marigold-850 text-xs font-bold px-3 py-2 rounded-lg text-center leading-relaxed">
               {t(lang, "demoCredentialsLabel")}:<br />
-              {t(lang, "profilePhone")}: <span className="font-mono">9876543210</span> • {t(lang, "createPin")}: <span className="font-mono">123456</span>
+              {t(lang, "profilePhone")}: <span className="font-mono">9876543210</span> • {t(lang, "enterPin")}: <span className="font-mono">123456</span>
             </div>
 
             <p className="text-xs text-ink/50 text-center leading-relaxed">

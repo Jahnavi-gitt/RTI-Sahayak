@@ -48,11 +48,11 @@ export async function generateRtiQuestions(
   }
 }
 
-export async function findAuthorities(query: string): Promise<Authority[]> {
+export async function findAuthorities(query: string, lang: string = "en"): Promise<Authority[]> {
   try {
-    return await callBackend<Authority[]>("/api/authorities", { query });
+    return await callBackend<Authority[]>("/api/authorities", { query, lang });
   } catch {
-    return searchAuthorities(query);
+    return searchAuthorities(query, lang);
   }
 }
 

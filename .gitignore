@@ -7,3 +7,4 @@ dist/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/.venv/
+scratch/

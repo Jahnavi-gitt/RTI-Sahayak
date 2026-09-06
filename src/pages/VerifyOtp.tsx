@@ -46,7 +46,7 @@ export default function VerifyOtp() {
             {t(lang, "verifyOtp")}
           </h1>
           <p className="text-base text-ink/80 leading-relaxed">
-            We sent a verification code to {obscurePhoneNumber(phone)}
+            {t(lang, "enterOtpSent")} ({obscurePhoneNumber(phone)})
           </p>
         </div>
 

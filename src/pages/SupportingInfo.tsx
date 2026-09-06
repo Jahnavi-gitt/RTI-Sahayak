@@ -26,16 +26,17 @@ export default function SupportingInfo() {
   const [loading, setLoading] = useState(false);
 
   // DigiLocker Demo Documents list
-  const DIGILOCKER_DOCS = [
-    "Address Proof",
-    "Identity Proof",
-    "Scholarship Certificate",
-    "Income Certificate"
-  ];
+  const DIGILOCKER_DOC_KEYS = [
+    "docAddress",
+    "docIdentity",
+    "docScholarship",
+    "docIncome"
+  ] as const;
 
-  function toggleDigiDoc(doc: string) {
+  function toggleDigiDoc(docKey: string) {
+    const docLabel = t(lang, docKey as any);
     setSelectedDigiDocs((prev) =>
-      prev.includes(doc) ? prev.filter((d) => d !== doc) : [...prev, doc]
+      prev.includes(docLabel) ? prev.filter((d) => d !== docLabel) : [...prev, docLabel]
     );
   }
 
@@ -199,13 +200,13 @@ export default function SupportingInfo() {
               <p className="text-sm font-semibold text-ink">{t(lang, "verifyChooseSub")}</p>
               <ul className="space-y-2 text-sm text-ink/80">
                 <li className="flex items-center gap-2 font-medium">
-                  <span className="text-leaf"><Check size={16} strokeWidth={3} /></span> Identity document
+                  <span className="text-leaf"><Check size={16} strokeWidth={3} /></span> {t(lang, "docIdentity")}
                 </li>
                 <li className="flex items-center gap-2 font-medium">
-                  <span className="text-leaf"><Check size={16} strokeWidth={3} /></span> Address document
+                  <span className="text-leaf"><Check size={16} strokeWidth={3} /></span> {t(lang, "docAddress")}
                 </li>
                 <li className="flex items-center gap-2 font-medium">
-                  <span className="text-leaf"><Check size={16} strokeWidth={3} /></span> Supporting certificate
+                  <span className="text-leaf"><Check size={16} strokeWidth={3} /></span> {t(lang, "docScholarship")}
                 </li>
               </ul>
               <p className="text-xs text-ink/60 border-t border-teal-50 pt-3 italic">
@@ -238,19 +239,20 @@ export default function SupportingInfo() {
             )}
 
             <div className="flex flex-col gap-3">
-              {DIGILOCKER_DOCS.map((doc) => {
-                const selected = selectedDigiDocs.includes(doc);
+              {DIGILOCKER_DOC_KEYS.map((docKey) => {
+                const docLabel = t(lang, docKey);
+                const selected = selectedDigiDocs.includes(docLabel);
                 return (
                   <button
-                    key={doc}
-                    onClick={() => toggleDigiDoc(doc)}
+                    key={docKey}
+                    onClick={() => toggleDigiDoc(docKey)}
                     className={`w-full text-left rounded-card p-4 border-2 flex items-center justify-between font-semibold transition-all ${
                       selected
                         ? "border-leaf bg-leaf/5 text-leaf shadow-sm"
                         : "border-teal-100 bg-white text-ink"
                     }`}
                   >
-                    <span>{doc}</span>
+                    <span>{docLabel}</span>
                     {selected && (
                       <span className="bg-leaf text-white w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold">
                         ✓
@@ -312,7 +314,7 @@ export default function SupportingInfo() {
                       setUploadedFile(null);
                       setAttachedDocs([]);
                     }}
-                    className="min-h-[52px] px-4 rounded-card font-body font-semibold text-[17px] border-2 border-brick text-brick hover:bg-brick/5 flex-1"
+                    className="min-h-[52px] px-4 rounded-card font-body font-semibold text-base sm:text-lg border-2 border-brick text-brick hover:bg-brick/5 flex-1"
                   >
                     {t(lang, "uploadChooseAnother")}
                   </button>

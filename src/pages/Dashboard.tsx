@@ -1,25 +1,25 @@
 import { useNavigate } from "react-router-dom";
-import { Landmark, ArrowRight } from "lucide-react";
+import { Landmark, ArrowRight, Scale } from "lucide-react";
 import Shell from "../components/Shell";
 import Button from "../components/Button";
 import { useApp } from "../context/AppContext";
 import { t } from "../i18n/strings";
 import { formatPhoneNumber } from "../utils/security";
+import { getLocalizedDepartmentName } from "../data/departments";
 
 export default function Dashboard() {
-  const { lang, requests, currentUser } = useApp();
+  const { lang, requests, currentUser, isEligibleForAppeal } = useApp();
   const navigate = useNavigate();
 
-  // Redirect if not signed in (for the prototype, if not signed in, redirect to landing /)
   if (!currentUser) {
     navigate("/");
     return null;
   }
 
   // Calculate statistics
-  const activeCount = requests.filter((r) => r.currentStatus !== "RESPONSE_RECEIVED").length;
+  const activeCount = requests.filter((r) => r.currentStatus !== "RESPONSE_RECEIVED" && r.currentStatus !== "APPEAL_DISPOSED").length;
   const responseCount = requests.filter((r) => r.currentStatus === "RESPONSE_RECEIVED").length;
-  const actionRequiredCount = 0; // Default mock statistic
+  const appealCount = requests.filter((r) => r.currentStatus === "APPEAL_FILED" || r.currentStatus === "APPEAL_UNDER_REVIEW").length;
 
   return (
     <Shell step={undefined} hideChrome={false}>
@@ -57,9 +57,9 @@ export default function Dashboard() {
           />
           <CounterCard
             title={t(lang, "actionRequired")}
-            value={actionRequiredCount}
-            color="text-brick"
-            bg="bg-brick/10"
+            value={appealCount}
+            color="text-marigold-700"
+            bg="bg-marigold-50"
           />
         </div>
 
@@ -77,17 +77,21 @@ export default function Dashboard() {
             <div className="flex flex-col gap-3">
               {requests.map((req) => {
                 const isResponse = req.currentStatus === "RESPONSE_RECEIVED";
+                const isAppeal = req.currentStatus === "APPEAL_FILED" || req.currentStatus === "APPEAL_UNDER_REVIEW";
+                const appealEligible = isEligibleForAppeal(req);
+
                 return (
-                  <button
+                  <div
                     key={req.id}
-                    onClick={() => navigate(`/track/${req.id}`)}
-                    className="w-full text-left bg-white border border-teal-100 hover:border-teal-400 rounded-card p-4 flex flex-col gap-2.5 shadow-card transition-colors"
+                    className="w-full bg-white border border-teal-100 hover:border-teal-400 rounded-card p-4 flex flex-col gap-2.5 shadow-card transition-colors"
                   >
                     <div className="flex justify-between items-start gap-2">
                       <span className="font-mono text-xs font-bold text-ink/50">{req.id}</span>
                       <span
-                        className={`px-2 py-0.5 rounded-full text-xs font-bold font-mono ${
-                          isResponse
+                        className={`px-2.5 py-0.5 rounded-full text-xs font-bold font-mono ${
+                          isAppeal
+                            ? "bg-purple-100 text-purple-800"
+                            : isResponse
                             ? "bg-leaf/15 text-leaf"
                             : "bg-marigold-100 text-marigold-800"
                         }`}
@@ -96,20 +100,45 @@ export default function Dashboard() {
                       </span>
                     </div>
 
-                    <div>
-                      <p className="font-bold text-teal-950 text-base line-clamp-1">{req.rawProblem}</p>
-                      <p className="text-xs text-ink/60 flex items-center gap-1 mt-1">
-                        <Landmark size={12} /> {req.authority.name}
+                    <button
+                      onClick={() => navigate(`/track/${req.id}`)}
+                      className="text-left group"
+                    >
+                      <p className="font-bold text-teal-950 text-base line-clamp-1 group-hover:text-teal-700">
+                        {req.rawProblem}
                       </p>
-                    </div>
+                      <p className="text-xs text-ink/60 flex items-center gap-1 mt-1">
+                        <Landmark size={12} /> {getLocalizedDepartmentName(req.authority, lang)}
+                      </p>
+                    </button>
 
-                    <div className="flex justify-between items-center text-xs text-ink/40 border-t border-teal-50 pt-2 mt-0.5">
-                      <span>Submitted: {new Date(req.createdAt).toLocaleDateString(lang === "en" ? "en-IN" : "hi-IN", { day: "2-digit", month: "short", year: "numeric" })}</span>
-                      <span className="text-teal-700 font-bold hover:underline flex items-center gap-0.5">
-                        {t(lang, "viewDetails")} →
+                    <div className="flex justify-between items-center text-xs text-ink/50 border-t border-teal-50 pt-2 mt-0.5">
+                      <span>
+                        {new Date(req.createdAt).toLocaleDateString("en-IN", {
+                          day: "2-digit",
+                          month: "short",
+                          year: "numeric"
+                        })}
                       </span>
+
+                      <div className="flex items-center gap-3">
+                        {appealEligible && (
+                          <button
+                            onClick={() => navigate(`/track/${req.id}/appeal`)}
+                            className="text-marigold-700 font-bold hover:underline flex items-center gap-1"
+                          >
+                            <Scale size={12} /> {t(lang, "fileFirstAppeal")}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => navigate(`/track/${req.id}`)}
+                          className="text-teal-700 font-bold hover:underline"
+                        >
+                          {t(lang, "viewDetails")} →
+                        </button>
+                      </div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
