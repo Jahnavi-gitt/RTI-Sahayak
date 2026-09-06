@@ -199,7 +199,13 @@ const initialRequests: RtiRequest[] = [
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [lang, setLang] = useState<Lang>(() => {
-    return (localStorage.getItem("rti_lang") as Lang) || "en";
+    try {
+      const saved = localStorage.getItem("rti_lang") as Lang;
+      if (saved && ["en", "hi", "te", "ta", "kn", "ml", "bn", "mr"].includes(saved)) {
+        return saved;
+      }
+    } catch {}
+    return "en";
   });
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [requests, setRequests] = useState<RtiRequest[]>(initialRequests);
