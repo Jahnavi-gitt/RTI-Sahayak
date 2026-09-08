@@ -21,23 +21,8 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.lang-ta {
-  font-family: "Noto Sans Tamil", "Noto Sans", sans-serif;
-}
-.lang-hi, .lang-mr {
-  font-family: "Noto Sans Devanagari", "Noto Sans", sans-serif;
-}
-.lang-te {
-  font-family: "Noto Sans Telugu", "Noto Sans", sans-serif;
-}
-.lang-kn {
-  font-family: "Noto Sans Kannada", "Noto Sans", sans-serif;
-}
-.lang-ml {
-  font-family: "Noto Sans Malayalam", "Noto Sans", sans-serif;
-}
-.lang-bn {
-  font-family: "Noto Sans Bengali", "Noto Sans", sans-serif;
+.lang-ta, .lang-hi {
+  font-family: "Noto Sans Tamil", "Noto Sans Devanagari", "Noto Sans", sans-serif;
 }
 
 :focus-visible {
