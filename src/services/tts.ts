@@ -305,10 +305,15 @@ export async function playAudioFallback(
   const chunks = chunkText(text);
   let chunkIndex = 0;
   let hasStarted = false;
+  let activeBlobUrl: string | null = null;
 
-  const playNext = () => {
+  const playNext = async () => {
     // Check generation before every single chunk playback
     if (generation !== speechGeneration) {
+      if (activeBlobUrl) {
+        URL.revokeObjectURL(activeBlobUrl);
+        activeBlobUrl = null;
+      }
       if (activeFallbackAudio) {
         try {
           activeFallbackAudio.pause();
@@ -319,6 +324,10 @@ export async function playAudioFallback(
     }
 
     if (chunkIndex >= chunks.length) {
+      if (activeBlobUrl) {
+        URL.revokeObjectURL(activeBlobUrl);
+        activeBlobUrl = null;
+      }
       options.onEnd?.();
       return;
     }
@@ -326,9 +335,36 @@ export async function playAudioFallback(
     const currentChunk = chunks[chunkIndex];
     chunkIndex++;
 
-    const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
+    const proxyUrl = `/api/tts?text=${encodeURIComponent(currentChunk)}&lang=${encodeURIComponent(lang)}`;
+    const directUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
       currentChunk
     )}&tl=${encodeURIComponent(lang)}&client=tw-ob`;
+
+    let audioSrc = proxyUrl;
+
+    try {
+      // Attempt fetching blob for zero-latency local memory playback
+      const res = await fetch(proxyUrl);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (generation !== speechGeneration) return;
+        if (activeBlobUrl) {
+          URL.revokeObjectURL(activeBlobUrl);
+        }
+        activeBlobUrl = URL.createObjectURL(blob);
+        audioSrc = activeBlobUrl;
+      }
+    } catch {
+      audioSrc = proxyUrl;
+    }
+
+    if (generation !== speechGeneration) {
+      if (activeBlobUrl) {
+        URL.revokeObjectURL(activeBlobUrl);
+        activeBlobUrl = null;
+      }
+      return;
+    }
 
     const audio = new Audio();
     activeFallbackAudio = audio;
@@ -354,80 +390,31 @@ export async function playAudioFallback(
 
     audio.onerror = () => {
       if (generation !== speechGeneration) return;
-      // If direct CDN failed, attempt proxy endpoint
-      const proxyUrl = `/api/tts?text=${encodeURIComponent(currentChunk)}&lang=${encodeURIComponent(lang)}`;
-      const backupAudio = new Audio(proxyUrl);
-      activeFallbackAudio = backupAudio;
-      backupAudio.volume = 1.0;
-
-      backupAudio.onplay = () => {
-        if (generation !== speechGeneration) {
-          try {
-            backupAudio.pause();
-          } catch {}
-          return;
-        }
-        if (!hasStarted) {
-          hasStarted = true;
-          options.onStart?.();
-        }
-      };
-
-      backupAudio.onended = () => {
-        if (generation !== speechGeneration) return;
-        playNext();
-      };
-
-      backupAudio.onerror = (e) => {
-        if (generation !== speechGeneration) return;
-        console.error("Audio fallback playback failed:", e);
-        options.onError?.(e);
-      };
-
-      backupAudio.play().catch((err) => {
-        if (generation !== speechGeneration) return;
-        console.warn("Backup audio play() interrupted:", err);
-        options.onError?.(err);
-      });
+      if (audio.src !== directUrl) {
+        audio.src = directUrl;
+        audio.play().catch((err) => {
+          if (generation !== speechGeneration) return;
+          console.warn("[TTS] Direct fallback failed:", err);
+          options.onError?.(err);
+        });
+      } else {
+        options.onError?.(new Error("Audio fallback playback failed"));
+      }
     };
 
-    audio.src = audioUrl;
+    audio.src = audioSrc;
     audio.play().catch((err) => {
       if (generation !== speechGeneration) return;
-      console.warn("Audio play() interrupted or blocked, trying backup:", err);
-      const proxyUrl = `/api/tts?text=${encodeURIComponent(currentChunk)}&lang=${encodeURIComponent(lang)}`;
-      const backupAudio = new Audio(proxyUrl);
-      activeFallbackAudio = backupAudio;
-      backupAudio.volume = 1.0;
-
-      backupAudio.onplay = () => {
-        if (generation !== speechGeneration) {
-          try {
-            backupAudio.pause();
-          } catch {}
-          return;
-        }
-        if (!hasStarted) {
-          hasStarted = true;
-          options.onStart?.();
-        }
-      };
-
-      backupAudio.onended = () => {
-        if (generation !== speechGeneration) return;
-        playNext();
-      };
-
-      backupAudio.onerror = (e) => {
-        if (generation !== speechGeneration) return;
-        options.onError?.(e);
-      };
-
-      backupAudio.play().catch((backupErr) => {
-        if (generation !== speechGeneration) return;
-        console.error("Backup audio play failed:", backupErr);
-        options.onError?.(backupErr);
-      });
+      console.warn("[TTS] Audio play() interrupted or blocked, trying direct:", err);
+      if (audioSrc !== directUrl) {
+        audio.src = directUrl;
+        audio.play().catch((e) => {
+          if (generation !== speechGeneration) return;
+          options.onError?.(e);
+        });
+      } else {
+        options.onError?.(err);
+      }
     });
   };
 
